@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>做七登記</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 Firebase 服務 -->
+    <script type="module">
+        // 匯入 Firebase SDK
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            onAuthStateChanged,
+            signInWithCustomToken
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            addDoc, 
+            setDoc, 
+            updateDoc, 
+            deleteDoc, 
+            onSnapshot, 
+            collection, 
+            query, 
+            getDocs,
+            setLogLevel
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // =======================================================================
+        // 1. Firebase 設定
+        // =======================================================================
+        
+        // 獲取由 Canvas 環境提供的 Firebase 設定
+        // 這是修復 auth/custom-token-mismatch 錯誤的關鍵
+        let firebaseConfig = {};
+        try {
+            // __firebase_config 是由執行環境自動注入的字串
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = JSON.parse(__firebase_config);
+                console.log("成功解析 __firebase_config");
+            } else {
+                console.warn("__firebase_config 未定義。App 可能無法連線。");
+                // 如果在本地測試（非 Canvas 環境），可以使用您自己的 config
+                // firebaseConfig = { apiKey: "AIza...", authDomain: "servicelogs-8577c...", ... };
+            }
+        } catch (e) {
+            console.error("解析 __firebase_config 失敗:", e);
+            // 此時 showCustomAlert 可能尚未定義，使用原生 alert
+            alert("系統設定檔載入失敗，無法連線。");
+        }
+        // !! 替換結束 !!
+
+        // 全局變數
+        let db, auth;
+        let currentUserId = null;
+        let currentDeceasedId = null;
+        let deceasedUnsubscribe = null; // 用於取消訂閱往生者列表
+        let familyUnsubscribe = null; // 用於取消訂閱家屬列表
+        let attendanceUnsubscribe = null; // 用於取消訂閱出席列表
+
+        // 修正 'pageList is not defined' 錯誤，在此宣告頁面變數
+        let pageList, pageAddDeceased, pageDetails, pageEditDeceased;
+
+        let deceasedList, addDeceasedForm, deceasedNameInput, deceasedDateInput, deceasedOldIdInput, deceasedReferrerInput, deceasedSourceSelect, deceasedSourceNotesInput, deceasedApplicantNameInput, deceasedApplicantRelInput, deceasedContactNameInput, deceasedContactRelInput, deceasedContactPhoneInput, deceasedChantDateInput, deceasedChantTimeInput, deceasedChantLocationInput, deceasedRemarksInput;
+        let deceasedNotifyHundredInput, deceasedNotifyYear1Input, deceasedNotifyYear3Input;
+        let detailsDeceasedName, detailsDeceasedDate, detailsDeceasedOldId, detailsDeceasedReferrer, detailsDeceasedSource, detailsDeceasedSourceNotes, detailsApplicant, detailsContact, detailsContactPhone, detailsChantDateTime, detailsChantLocation, detailsRemarks, detailsNotify, editDeceasedButton;
+        let editDeceasedForm, editDeceasedNameInput, editDeceasedDateInput, editDeceasedOldIdInput, editDeceasedReferrerInput, editDeceasedSourceSelect, editDeceasedSourceNotesInput, editDeceasedApplicantNameInput, editDeceasedApplicantRelInput, editDeceasedContactNameInput, editDeceasedContactRelInput, editDeceasedContactPhoneInput, editDeceasedChantDateInput, editDeceasedChantTimeInput, editDeceasedChantLocationInput, editDeceasedRemarksInput, cancelEditButton;
+        let editDeceasedNotifyHundredInput, editDeceasedNotifyYear1Input, editDeceasedNotifyYear3Input;
+        let tabButtons, tabContents;
+        let addFamilyForm, familyNameInput, familyRelationInput, familyList;
+        let addAttendanceForm, attendanceFamilySelect, attendanceTypeSelect, attendanceDateInput, attendanceList;
+        let overviewList;
+        let loadingIndicator, exportButton, exportLoadingIndicator, addDeceasedFab;
+
+        // =======================================================================
+        // 2. 初始化應用程式
+        // =======================================================================
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log("DOM 已載入，開始初始化 App");
+
+            // 獲取所有頁面和重要元素
+            pageList = document.getElementById('page-list');
+            pageAddDeceased = document.getElementById('page-add-deceased');
+            pageDetails = document.getElementById('page-details');
+            pageEditDeceased = document.getElementById('page-edit-deceased'); // 修改頁面
+
+            deceasedList = document.getElementById('deceased-list');
+            addDeceasedForm = document.getElementById('add-deceased-form');
+            loadingIndicator = document.getElementById('loading-indicator');
+            exportButton = document.getElementById('export-button'); // 匯出按鈕
+            exportLoadingIndicator = document.getElementById('export-loading-text'); // 匯出讀取
+            addDeceasedFab = document.getElementById('add-deceased-fab'); // 新增浮動按鈕
+
+            // 新增/修改 表單欄位
+            deceasedNameInput = document.getElementById('deceased-name');
+            deceasedDateInput = document.getElementById('deceased-date');
+            deceasedOldIdInput = document.getElementById('deceased-old-id');
+            deceasedReferrerInput = document.getElementById('deceased-referrer');
+            deceasedSourceSelect = document.getElementById('deceased-source');
+            deceasedSourceNotesInput = document.getElementById('deceased-source-notes');
+            deceasedApplicantNameInput = document.getElementById('deceased-applicant-name');
+            deceasedApplicantRelInput = document.getElementById('deceased-applicant-relation');
+            deceasedContactNameInput = document.getElementById('deceased-contact-name');
+            deceasedContactRelInput = document.getElementById('deceased-contact-relation');
+            deceasedContactPhoneInput = document.getElementById('deceased-contact-phone'); // 新增
+            deceasedChantDateInput = document.getElementById('deceased-chant-date');
+            deceasedChantTimeInput = document.getElementById('deceased-chant-time');
+            deceasedChantLocationInput = document.getElementById('deceased-chant-location');
+            deceasedRemarksInput = document.getElementById('deceased-remarks');
+            // 新增 - 通知選項
+            deceasedNotifyHundredInput = document.getElementById('deceased-notify-hundred');
+            deceasedNotifyYear1Input = document.getElementById('deceased-notify-year1');
+            deceasedNotifyYear3Input = document.getElementById('deceased-notify-year3');
+
+            // 詳細頁面元素
+            detailsDeceasedName = document.getElementById('details-deceased-name');
+            detailsDeceasedDate = document.getElementById('details-deceased-date');
+            detailsDeceasedOldId = document.getElementById('details-deceased-old-id');
+            detailsDeceasedReferrer = document.getElementById('details-deceased-referrer');
+            detailsDeceasedSource = document.getElementById('details-deceased-source');
+            detailsDeceasedSourceNotes = document.getElementById('details-deceased-source-notes');
+            detailsApplicant = document.getElementById('details-applicant');
+            detailsContact = document.getElementById('details-contact');
+            detailsContactPhone = document.getElementById('details-contact-phone'); // 新增
+            detailsChantDateTime = document.getElementById('details-chant-date-time');
+            detailsChantLocation = document.getElementById('details-chant-location');
+            detailsRemarks = document.getElementById('details-remarks');
+            detailsNotify = document.getElementById('details-notify'); // 新增
+            editDeceasedButton = document.getElementById('edit-deceased-button');
+
+            // 修改頁面元素
+            editDeceasedForm = document.getElementById('edit-deceased-form');
+            editDeceasedNameInput = document.getElementById('edit-deceased-name');
+            editDeceasedDateInput = document.getElementById('edit-deceased-date');
+            editDeceasedOldIdInput = document.getElementById('edit-deceased-old-id');
+            editDeceasedReferrerInput = document.getElementById('edit-deceased-referrer');
+            editDeceasedSourceSelect = document.getElementById('edit-deceased-source');
+            editDeceasedSourceNotesInput = document.getElementById('edit-deceased-source-notes');
+            editDeceasedApplicantNameInput = document.getElementById('edit-deceased-applicant-name');
+            editDeceasedApplicantRelInput = document.getElementById('edit-deceased-applicant-relation');
+            editDeceasedContactNameInput = document.getElementById('edit-deceased-contact-name');
+            editDeceasedContactRelInput = document.getElementById('edit-deceased-contact-relation');
+            editDeceasedContactPhoneInput = document.getElementById('edit-deceased-contact-phone'); // 新增
+            editDeceasedChantDateInput = document.getElementById('edit-deceased-chant-date');
+            editDeceasedChantTimeInput = document.getElementById('edit-deceased-chant-time');
+            editDeceasedChantLocationInput = document.getElementById('edit-deceased-chant-location');
+            editDeceasedRemarksInput = document.getElementById('edit-deceased-remarks');
+            // 新增 - 修改頁通知選項
+            editDeceasedNotifyHundredInput = document.getElementById('edit-deceased-notify-hundred');
+            editDeceasedNotifyYear1Input = document.getElementById('edit-deceased-notify-year1');
+            editDeceasedNotifyYear3Input = document.getElementById('edit-deceased-notify-year3');
+            cancelEditButton = document.getElementById('cancel-edit-button');
+
+            // 詳細頁面 - Tabs
+            tabButtons = document.querySelectorAll('.tab-button');
+            tabContents = document.querySelectorAll('.tab-content');
+            addFamilyForm = document.getElementById('add-family-form');
+            familyNameInput = document.getElementById('family-name');
+            familyRelationInput = document.getElementById('family-relation');
+            familyList = document.getElementById('family-list');
+            addAttendanceForm = document.getElementById('add-attendance-form');
+            attendanceFamilySelect = document.getElementById('attendance-family-select');
+            attendanceTypeSelect = document.getElementById('attendance-type');
+            attendanceDateInput = document.getElementById('attendance-date');
+            attendanceList = document.getElementById('attendance-list');
+            overviewList = document.getElementById('overview-list');
+
+            // 初始化 Firebase
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                setLogLevel('Debug'); // 顯示詳細日誌
+                console.log("Firebase 初始化成功");
+                setupAuthListener(); // 設置認證監聽器
+            } catch (error) {
+                console.error("Firebase 初始化失敗:", error);
+                showCustomAlert("系統初始化失敗，請檢查網路或稍後再試。");
+            }
+
+            // 設置事件監聽器
+            setupEventListeners();
+        });
+
+        // =======================================================================
+        // 3. 認證管理
+        // =======================================================================
+        
+        async function setupAuthListener() {
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    console.log("使用者已登入:", user.uid);
+                    currentUserId = user.uid;
+                    // 使用者已登入，加載資料
+                    await loadDeceasedList();
+                } else {
+                    console.log("使用者未登入，嘗試匿名登入...");
+                    try {
+                        // 檢查是否有 Canvas 提供的 token
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            console.log("偵測到 __initial_auth_token，嘗試 token 登入");
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                            console.log("Token 登入成功");
+                        } else {
+                            console.log("未偵測到 token，執行匿名登入");
+                            await signInAnonymously(auth);
+                            console.log("匿名登入成功");
+                        }
+                        // 登入後 onAuthStateChanged 會再次觸發
+                    } catch (error) {
+                        console.error("登入失敗:", error);
+                        showCustomAlert("登入失敗，無法同步資料。");
+                    }
+                }
+            });
+        }
+
+        // =D======================================================================
+        // 4. 頁面導航
+        // =======================================================================
+        
+        function navigateTo(pageId) {
+            console.log("導航至:", pageId);
+            [pageList, pageAddDeceased, pageDetails, pageEditDeceased].forEach(page => {
+                if (page.id === pageId) {
+                    page.classList.remove('hidden-page');
+                } else {
+                    page.classList.add('hidden-page');
+                }
+            });
+        }
+
+        // =======================================================================
+        // 5. 事件監聽器
+        // =======================================================================
+        
+        function setupEventListeners() {
+            // 主頁 -> 新增頁
+            addDeceasedFab.addEventListener('click', () => {
+                addDeceasedForm.reset(); // 清空表單
+                navigateTo('page-add-deceased');
+            });
+
+            // 匯出按鈕
+            exportButton.addEventListener('click', async () => {
+                if (!currentUserId) {
+                    showCustomAlert("請先登入");
+                    return;
+                }
+                if (await showCustomConfirm("您確定要匯出所有資料嗎？這可能會花費一些時間。")) {
+                    exportLoadingIndicator.classList.remove('hidden-page'); // 顯示讀取中
+                    try {
+                        await exportAllData();
+                        showCustomAlert("資料匯出成功！已下載 JSON 備份檔。");
+                    } catch (error) {
+                        console.error("匯出失敗:", error);
+                        showCustomAlert("匯出失敗，請檢查網路連線。");
+                    } finally {
+                        exportLoadingIndicator.classList.add('hidden-page'); // 隱藏讀取中
+                    }
+                }
+            });
+
+            // 新增頁
+            addDeceasedForm.addEventListener('submit', handleAddDeceased);
+
+            // 詳細頁 - Tab 切換
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    // 移除所有按鈕的 active 狀態
+                    tabButtons.forEach(btn => btn.classList.remove('border-b-2', 'border-teal-500', 'text-teal-600'));
+                    // 隱藏所有內容
+                    tabContents.forEach(content => content.classList.add('hidden-page'));
+
+                    // 啟用當前點擊的按鈕
+                    button.classList.add('border-b-2', 'border-teal-500', 'text-teal-600');
+                    // 顯示對應的內容
+                    const targetContent = document.getElementById(button.dataset.target);
+                    if (targetContent) {
+                        targetContent.classList.remove('hidden-page');
+                    }
+                });
+            });
+
+            // 詳細頁 - 新增家屬
+            addFamilyForm.addEventListener('submit', handleAddFamily);
+
+            // 詳細頁 - 登記做七
+            addAttendanceForm.addEventListener('submit', handleAddAttendance);
+            
+            // 詳細頁 -> 修改頁
+            editDeceasedButton.addEventListener('click', async () => {
+                if (!currentDeceasedId) return;
+                try {
+                    const docSnap = await getDoc(doc(db, getDeceasedCollectionPath(), currentDeceasedId));
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        // Tiller in form
+                        editDeceasedNameInput.value = data.name || '';
+                        editDeceasedDateInput.value = data.deceasedDate || '';
+                        editDeceasedOldIdInput.value = data.oldRecordId || '';
+                        editDeceasedReferrerInput.value = data.referrer || '';
+                        editDeceasedSourceSelect.value = data.source || '';
+                        editDeceasedSourceNotesInput.value = data.sourceNotes || '';
+                        editDeceasedApplicantNameInput.value = data.applicantName || '';
+                        editDeceasedApplicantRelInput.value = data.applicantRelation || '';
+                        editDeceasedContactNameInput.value = data.contactName || '';
+                        editDeceasedContactRelInput.value = data.contactRelation || '';
+                        editDeceasedContactPhoneInput.value = data.contactPhone || ''; // 新增
+                        editDeceasedChantDateInput.value = data.chantDate || '';
+                        editDeceasedChantTimeInput.value = data.chantTime || '';
+                        editDeceasedChantLocationInput.value = data.chantLocation || '';
+                        editDeceasedRemarksInput.value = data.remarks || '';
+                        // 新增 - 填入通知選項
+                        editDeceasedNotifyHundredInput.checked = data.notifyHundred || false;
+                        editDeceasedNotifyYear1Input.checked = data.notifyYear1 || false;
+                        editDeceasedNotifyYear3Input.checked = data.notifyYear3 || false;
+                        
+                        navigateTo('page-edit-deceased');
+                    } else {
+                        console.log("找不到該筆資料");
+                        showCustomAlert("找不到資料，可能已被刪除。");
+                    }
+                } catch (error) {
+                    console.error("加載資料以供編輯失敗:", error);
+                    showCustomAlert("加載資料失敗。");
+                }
+            });
+            
+            // 修改頁 - 儲存
+            editDeceasedForm.addEventListener('submit', handleEditDeceased);
+
+            // 修改頁 - 取消
+            cancelEditButton.addEventListener('click', () => {
+                navigateTo('page-details'); // 返回詳細頁
+            });
+        }
+
+        // =======================================================================
+        // 6. 資料庫路徑 (使用 App ID)
+        // =======================================================================
+        
+        // 獲取 App ID (如果未定義，則使用 default)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // 資料庫結構: /artifacts/{appId}/public/data/{collection}
+        function getDeceasedCollectionPath() {
+            return `artifacts/${appId}/public/data/deceased`;
+        }
+        
+        function getFamilyCollectionPath(deceasedId) {
+            return `artifacts/${appId}/public/data/deceased/${deceasedId}/family`;
+        }
+        
+        function getAttendanceCollectionPath(deceasedId) {
+            return `artifacts/${appId}/public/data/deceased/${deceasedId}/attendance`;
+        }
+
+        // =======================================================================
+        // 7. 往生菩薩 (CRUD)
+        // =======================================================================
+        
+        // C - 新增往生菩薩
+        async function handleAddDeceased(e) {
+            e.preventDefault();
+            if (!currentUserId || !deceasedNameInput.value || !deceasedDateInput.value) {
+                showCustomAlert("請填寫菩薩姓名和往生日期。");
+                return;
+            }
+
+            const deceasedData = {
+                name: deceasedNameInput.value,
+                deceasedDate: deceasedDateInput.value,
+                oldRecordId: deceasedOldIdInput.value || "",
+                referrer: deceasedReferrerInput.value || "",
+                source: deceasedSourceSelect.value || "",
+                sourceNotes: deceasedSourceNotesInput.value || "",
+                applicantName: deceasedApplicantNameInput.value || "",
+                applicantRelation: deceasedApplicantRelInput.value || "",
+                contactName: deceasedContactNameInput.value || "",
+                contactRelation: deceasedContactRelInput.value || "",
+                contactPhone: deceasedContactPhoneInput.value || "", // 新增
+                chantDate: deceasedChantDateInput.value || "",
+                chantTime: deceasedChantTimeInput.value || "",
+                chantLocation: deceasedChantLocationInput.value || "",
+                remarks: deceasedRemarksInput.value || "",
+                // 新增 - 通知選項
+                notifyHundred: deceasedNotifyHundredInput.checked,
+                notifyYear1: deceasedNotifyYear1Input.checked,
+                notifyYear3: deceasedNotifyYear3Input.checked,
+                createdAt: new Date().toISOString(),
+                createdBy: currentUserId
+            };
+
+            try {
+                const docRef = await addDoc(collection(db, getDeceasedCollectionPath()), deceasedData);
+                console.log("新增成功:", docRef.id);
+                currentDeceasedId = docRef.id; // 記住 ID
+                await loadDeceasedDetails(currentDeceasedId); // 加載詳細資料
+                navigateTo('page-details'); // 直接跳轉到詳細頁
+                addDeceasedForm.reset();
+            } catch (error) {
+                console.error("新增失敗:", error);
+                showCustomAlert("新增資料失敗，請檢查網路。");
+            }
+        }
+
+        // R - 加載往生菩薩列表
+        async function loadDeceasedList() {
+            if (!currentUserId) return;
+
+            loadingIndicator.classList.remove('hidden-page');
+            deceasedList.innerHTML = ''; // 清空列表
+
+            // 取消舊的監聽器
+            if (deceasedUnsubscribe) {
+                deceasedUnsubscribe();
+            }
+
+            const q = query(collection(db, getDeceasedCollectionPath()));
+            deceasedUnsubscribe = onSnapshot(q, (querySnapshot) => {
+                loadingIndicator.classList.add('hidden-page');
+                if (querySnapshot.empty) {
+                    deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右下角按鈕新增。</p>';
+                    return;
+                }
+                
+                // 排序資料 (最新的在最前)
+                const docs = querySnapshot.docs
+                    .map(doc => ({ id: doc.id, ...doc.data() }))
+                    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+                deceasedList.innerHTML = ''; // 再次清空
+                
+                docs.forEach(data => {
+                    const deceasedEl = document.createElement('div');
+                    deceasedEl.className = 'bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow cursor-pointer';
+                    deceasedEl.innerHTML = `
+                        <h3 class="text-lg font-semibold text-teal-700">${data.name}</h3>
+                        <p class="text-sm text-gray-600">往生日期: ${data.deceasedDate || '未填寫'}</p>
+                        ${data.oldRecordId ? `<p class="text-xs text-gray-500 mt-1">舊編號: ${data.oldRecordId}</p>` : ''}
+                        ${data.contactName ? `<p class="text-sm text-gray-600">聯絡人: ${data.contactName} (${data.contactRelation || '?'})</p>` : ''}
+                        ${data.contactPhone ? `<p class="text-sm text-gray-600">電話: ${data.contactPhone}</p>` : ''}
+                    `;
+                    deceasedEl.addEventListener('click', () => {
+                        currentDeceasedId = data.id;
+                        loadDeceasedDetails(data.id);
+                        navigateTo('page-details');
+                    });
+                    deceasedList.appendChild(deceasedEl);
+                });
+            }, (error) => {
+                console.error("加載列表失敗:", error);
+                loadingIndicator.classList.add('hidden-page');
+                deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
+            });
+        }
+
+        // R - 加載單筆往生菩薩詳細資料
+        async function loadDeceasedDetails(id) {
+            console.log("加載詳細資料:", id);
+            try {
+                const docSnap = await getDoc(doc(db, getDeceasedCollectionPath(), id));
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    detailsDeceasedName.textContent = data.name || 'N/A';
+                    detailsDeceasedDate.textContent = `往生日期: ${data.deceasedDate || 'N/A'}`;
+                    
+                    // 組合並顯示所有新欄位
+                    detailsDeceasedOldId.textContent = data.oldRecordId ? `舊編號: ${data.oldRecordId}` : '';
+                    detailsDeceasedReferrer.textContent = data.referrer ? `介紹人: ${data.referrer}` : '';
+                    detailsDeceasedSource.textContent = data.source ? `如何得知: ${data.source}` : '';
+                    detailsDeceasedSourceNotes.textContent = data.sourceNotes ? `↳ 說明: ${data.sourceNotes}` : '';
+                    
+                    detailsApplicant.textContent = (data.applicantName || data.applicantRelation)
+                        ? `申請人: ${data.applicantName || ''} (${data.applicantRelation || '?'})` : '';
+                    
+                    detailsContact.textContent = (data.contactName || data.contactRelation)
+                        ? `聯絡人: ${data.contactName || ''} (${data.contactRelation || '?'})` : '';
+                    
+                    detailsContactPhone.textContent = data.contactPhone ? `聯絡電話: ${data.contactPhone}` : ''; // 新增
+                        
+                    detailsChantDateTime.textContent = (data.chantDate || data.chantTime)
+                        ? `助念時間: ${data.chantDate || ''} ${data.chantTime || ''}`.trim() : '';
+
+                    detailsChantLocation.textContent = data.chantLocation ? `助念地點: ${data.chantLocation}` : '';
+                    detailsRemarks.textContent = data.remarks ? `備註: ${data.remarks}` : '';
+
+                    // 新增 - 顯示通知選項
+                    const notifyOptions = [];
+                    if (data.notifyHundred) notifyOptions.push("百日");
+                    if (data.notifyYear1) notifyOptions.push("對年");
+                    if (data.notifyYear3) notifyOptions.push("三年");
+                    
+                    if (notifyOptions.length > 0) {
+                        detailsNotify.textContent = `通知項目: ${notifyOptions.join('、')}`;
+                    } else {
+                        detailsNotify.textContent = '';
+                    }
+
+                    // 隱藏/顯示空的 p 標籤
+                   [detailsDeceasedOldId, detailsDeceasedReferrer, detailsDeceasedSource, detailsDeceasedSourceNotes, detailsApplicant, detailsContact, detailsContactPhone, detailsChantDateTime, detailsChantLocation, detailsRemarks, detailsNotify].forEach(el => {
+                        if (el.textContent === '') {
+                            el.classList.add('hidden-page');
+                        } else {
+                            el.classList.remove('hidden-page');
+                        }
+                    });
+
+                    // 加載子集合
+                    loadFamilyList(id);
+                    loadAttendanceList(id);
+                    loadOverview(id);
+                    
+                    // 重置 Tab 到第一個
+                    tabButtons[0].click();
+                } else {
+                    console.log("找不到該筆資料");
+                    showCustomAlert("找不到資料，可能已被刪除。");
+                    navigateTo('page-list');
+                }
+            } catch (error) {
+                console.error("加載詳細資料失敗:", error);
+                showCustomAlert("加載詳細資料失敗。");
+            }
+        }
+        
+        // U - 修改往生菩薩
+        async function handleEditDeceased(e) {
+            e.preventDefault();
+            if (!currentDeceasedId || !currentUserId) return;
+
+            const updatedData = {
+                name: editDeceasedNameInput.value,
+                deceasedDate: editDeceasedDateInput.value,
+                oldRecordId: editDeceasedOldIdInput.value || "",
+                referrer: editDeceasedReferrerInput.value || "",
+                source: editDeceasedSourceSelect.value || "",
+                sourceNotes: editDeceasedSourceNotesInput.value || "",
+                applicantName: editDeceasedApplicantNameInput.value || "",
+                applicantRelation: editDeceasedApplicantRelInput.value || "",
+                contactName: editDeceasedContactNameInput.value || "",
+                contactRelation: editDeceasedContactRelInput.value || "",
+                contactPhone: editDeceasedContactPhoneInput.value || "", // 新增
+                chantDate: editDeceasedChantDateInput.value || "",
+                chantTime: editDeceasedChantTimeInput.value || "",
+                chantLocation: editDeceasedChantLocationInput.value || "",
+                remarks: editDeceasedRemarksInput.value || "",
+                // 新增 - 通知選項
+                notifyHundred: editDeceasedNotifyHundredInput.checked,
+                notifyYear1: editDeceasedNotifyYear1Input.checked,
+                notifyYear3: editDeceasedNotifyYear3Input.checked,
+            };
+
+            try {
+                await updateDoc(doc(db, getDeceasedCollectionPath(), currentDeceasedId), updatedData);
+                console.log("修改成功");
+                await loadDeceasedDetails(currentDeceasedId); // 重新加載資料
+                navigateTo('page-details'); // 返回詳細頁
+            } catch (error) {
+                console.error("修改失敗:", error);
+                showCustomAlert("修改資料失敗，請檢查網路。");
+            }
+        }
+        
+        // (D - 刪除往生菩薩 - 暫未實現，需謹慎處理子集合)
+
+        // =======================================================================
+        // 8. 家屬管理 (CRUD)
+        // =======================================================================
+        
+        // C - 新增家屬
+        async function handleAddFamily(e) {
+            e.preventDefault();
+            if (!currentDeceasedId || !familyNameInput.value) {
+                showCustomAlert("請填寫家屬姓名。");
+                return;
+            }
+            const familyData = {
+                name: familyNameInput.value,
+                relation: familyRelationInput.value || '未填寫',
+                createdAt: new Date().toISOString()
+            };
+            try {
+                await addDoc(collection(db, getFamilyCollectionPath(currentDeceasedId)), familyData);
+                console.log("新增家屬成功");
+                addFamilyForm.reset();
+                // onSnapshot 會自動更新列表和下拉選單
+            } catch (error) {
+                console.error("新增家屬失敗:", error);
+                showCustomAlert("新增家屬失敗。");
+            }
+        }
+
+        // R - 加載家屬列表 (和登記下拉選單)
+        function loadFamilyList(deceasedId) {
+            if (familyUnsubscribe) familyUnsubscribe();
+            
+            const q = query(collection(db, getFamilyCollectionPath(deceasedId)));
+            familyUnsubscribe = onSnapshot(q, (querySnapshot) => {
+                familyList.innerHTML = '';
+                attendanceFamilySelect.innerHTML = '<option value="">-- 選擇家屬 --</option>'; // 重置下拉選單
+                
+                if (querySnapshot.empty) {
+                    familyList.innerHTML = '<p class="text-gray-500">尚未新增家屬。</p>';
+                    return;
+                }
+
+                querySnapshot.forEach(doc => {
+                    const family = doc.data();
+                    const familyId = doc.id;
+
+                    // 更新家屬列表
+                    const li = document.createElement('li');
+                    li.className = 'flex justify-between items-center p-2 border-b';
+                    li.innerHTML = `
+                        <span>${family.name} (${family.relation})</span>
+                        <button class="text-red-500 hover:text-red-700 text-sm" data-id="${familyId}">刪除</button>
+                    `;
+                    li.querySelector('button').addEventListener('click', async () => {
+                        if (await showCustomConfirm(`您確定要刪除家屬「${family.name}」嗎？`)) {
+                            try {
+                                await deleteDoc(doc(db, getFamilyCollectionPath(deceasedId), familyId));
+                                console.log("刪除家屬成功");
+                            } catch (error) {
+                                console.error("刪除家屬失敗:", error);
+                                showCustomAlert("刪除失敗。");
+                            }
+                        }
+                    });
+                    familyList.appendChild(li);
+
+                    // 更新下拉選單
+                    const option = document.createElement('option');
+                    option.value = familyId;
+                    option.textContent = `${family.name} (${family.relation})`;
+                    option.dataset.name = family.name; // 儲存名字供總覽使用
+                    option.dataset.relation = family.relation;
+                    attendanceFamilySelect.appendChild(option);
+                });
+            }, (error) => {
+                console.error("加載家屬列表失敗:", error);
+                familyList.innerHTML = '<p class="text-red-500">家屬列表加載失敗。</p>';
+            });
+        }
+
+        // =======================================================================
+        // 9. 做七登記 (CRUD)
+        // =======================================================================
+
+        // C - 新增做七紀錄
+        async function handleAddAttendance(e) {
+            e.preventDefault();
+            const selectedOption = attendanceFamilySelect.options[attendanceFamilySelect.selectedIndex];
+            if (!currentDeceasedId || !selectedOption.value || !attendanceTypeSelect.value || !attendanceDateInput.value) {
+                showCustomAlert("請選擇家屬、七旬類別和日期。");
+                return;
+            }
+
+            const attendanceData = {
+                familyId: selectedOption.value,
+                familyName: selectedOption.dataset.name,
+                familyRelation: selectedOption.dataset.relation,
+                type: attendanceTypeSelect.value,
+                date: attendanceDateInput.value,
+                createdAt: new Date().toISOString()
+            };
+            
+            try {
+                await addDoc(collection(db, getAttendanceCollectionPath(currentDeceasedId)), attendanceData);
+                console.log("登記成功");
+                addAttendanceForm.reset();
+                // onSnapshot 會自動更新列表
+            } catch (error) {
+                console.error("登記失敗:", error);
+                showCustomAlert("登記失敗。");
+            }
+        }
+
+        // R - 加載做七列表
+        function loadAttendanceList(deceasedId) {
+            if (attendanceUnsubscribe) attendanceUnsubscribe();
+            
+            const q = query(collection(db, getAttendanceCollectionPath(deceasedId)));
+            attendanceUnsubscribe = onSnapshot(q, (querySnapshot) => {
+                attendanceList.innerHTML = '';
+                
+                if (querySnapshot.empty) {
+                    attendanceList.innerHTML = '<p class="text-gray-500">尚無做七登記紀錄。</p>';
+                    return;
+                }
+                
+                // 排序 (日期最新的在最前)
+                const docs = querySnapshot.docs
+                    .map(doc => ({ id: doc.id, ...doc.data() }))
+                    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                docs.forEach(data => {
+                    const li = document.createElement('li');
+                    li.className = 'flex justify-between items-center p-2 border-b';
+                    li.innerHTML = `
+                        <span>
+                            <strong>${data.type}</strong> - 
+                            ${data.familyName || 'N/A'} (${data.familyRelation || '?'}) - 
+                            ${data.date}
+                        </span>
+                        <button class="text-red-500 hover:text-red-700 text-sm" data-id="${data.id}">刪除</button>
+                    `;
+                    
+                    li.querySelector('button').addEventListener('click', async () => {
+                        if (await showCustomConfirm(`您確定要刪除這筆「${data.type}」紀錄嗎？`)) {
+                            try {
+                                await deleteDoc(doc(db, getAttendanceCollectionPath(deceasedId), data.id));
+                                console.log("刪除紀錄成功");
+                            } catch (error) {
+                                console.error("刪除紀錄失敗:", error);
+                                showCustomAlert("刪除失敗。");
+                            }
+                        }
+                    });
+                    attendanceList.appendChild(li);
+                });
+            }, (error) => {
+                console.error("加載做七列表失敗:", error);
+                attendanceList.innerHTML = '<p class="text-red-500">登記列表加載失敗。</p>';
+            });
+        }
+        
+        // =======================================================================
+        // 10. 出席總覽 (R)
+        // =======================================================================
+        
+        // R - 加載出席總覽
+        async function loadOverview(deceasedId) {
+            if (!attendanceUnsubscribe) { // 確保監聽器已啟動
+                loadAttendanceList(deceasedId);
+            }
+            if (!familyUnsubscribe) {
+                loadFamilyList(deceasedId);
+            }
+
+            // 出席總覽依賴於 Attendance 和 Family 的 onSnapshot
+            // 我們在 onSnapshot 觸發時，重新計算總覽
+            
+            const recalculateOverview = () => {
+                overviewList.innerHTML = '';
+                const familyMap = new Map(); // 儲存家屬資料
+                const attendanceMap = new Map(); // 儲存出席次數
+
+                // 1. 從家屬列表建立 Map
+                Array.from(attendanceFamilySelect.options).forEach(opt => {
+                    if (opt.value) { // 排除 "-- 選擇家屬 --"
+                        familyMap.set(opt.value, { 
+                            name: opt.dataset.name, 
+                            relation: opt.dataset.relation 
+                        });
+                        attendanceMap.set(opt.value, new Map()); // { familyId -> { type -> count } }
+                    }
+                });
+
+                // 2. 從出席列表計算次數
+                Array.from(attendanceList.children).forEach(child => {
+                    // 這是一個 hacky 的方式，更好的方式是直接讀取快照資料
+                    // 但為了簡單起見，我們先解析 DOM
+                    const text = child.querySelector('span')?.textContent || '';
+                    const match = text.match(/<strong>(.*?)<\/strong> - (.*?) \((.*?)\) - (\d{4}-\d{2}-\d{2})/);
+                    if (match) {
+                        const type = match[1];
+                        const name = match[2];
+                        const relation = match[3];
+                        
+                        // 找到 familyId
+                        let familyId = null;
+                        for (const [id, data] of familyMap.entries()) {
+                            if (data.name === name && data.relation === relation) {
+                                familyId = id;
+                                break;
+                            }
+                        }
+                        
+                        if (familyId) {
+                            const typeMap = attendanceMap.get(familyId);
+                            const count = typeMap.get(type) || 0;
+                            typeMap.set(type, count + 1);
+                        }
+                    }
+                });
+                
+                // 3. 渲染總覽
+                if (familyMap.size === 0) {
+                    overviewList.innerHTML = '<p class="text-gray-500">尚無家屬資料，無法計算總覽。</p>';
+                    return;
+                }
+                
+                familyMap.forEach((data, familyId) => {
+                    const li = document.createElement('li');
+                    li.className = 'p-2 border-b';
+                    
+                    let typesHtml = '';
+                    const typeMap = attendanceMap.get(familyId);
+                    if (typeMap && typeMap.size > 0) {
+                        typeMap.forEach((count, type) => {
+                            typesHtml += `<span class="inline-block bg-teal-100 text-teal-800 text-xs px-2 py-1 rounded-full mr-1 mb-1">${type} (${count}次)</span>`;
+                        });
+                    } else {
+                        typesHtml = '<span class="text-xs text-gray-400">尚無出席紀錄</span>';
+                    }
+                    
+                    li.innerHTML = `
+                        <h4 class="font-semibold">${data.name} (${data.relation})</h4>
+                        <div class="mt-1 flex flex-wrap">
+                            ${typesHtml}
+                        </div>
+                    `;
+                    overviewList.appendChild(li);
+                });
+            };
+            
+            // 當家屬或出席列表更新時，重新計算總覽
+            const overviewObserver = new MutationObserver(recalculateOverview);
+            overviewObserver.observe(attendanceList, { childList: true });
+            overviewObserver.observe(familyList, { childList: true });
+            
+            // 立即計算一次
+            recalculateOverview();
+        }
+
+        // =======================================================================
+        // 11. 匯出功能
+        // =======================================================================
+        
+        async function exportAllData() {
+            if (!currentUserId) throw new Error("未登入");
+
+            const exportData = {
+                appId: appId,
+                exportDate: new Date().toISOString(),
+                deceased: []
+            };
+
+            // 1. 取得所有往生菩薩
+            const deceasedSnapshot = await getDocs(collection(db, getDeceasedCollectionPath()));
+            if (deceasedSnapshot.empty) {
+                console.log("沒有資料可匯出");
+                return;
+            }
+
+            // 2. 遍歷每一位菩薩
+            for (const deceasedDoc of deceasedSnapshot.docs) {
+                const deceasedData = deceasedDoc.data();
+                const deceasedId = deceasedDoc.id;
+                
+                const deceasedRecord = {
+                    id: deceasedId,
+                    data: deceasedData,
+                    family: [],
+                    attendance: []
+                };
+
+                // 3. 取得家屬
+                const familySnapshot = await getDocs(collection(db, getFamilyCollectionPath(deceasedId)));
+                familySnapshot.forEach(doc => {
+                    deceasedRecord.family.push({ id: doc.id, data: doc.data() });
+                });
+
+                // 4. 取得出席紀錄
+                const attendanceSnapshot = await getDocs(collection(db, getAttendanceCollectionPath(deceasedId)));
+                attendanceSnapshot.forEach(doc => {
+                    deceasedRecord.attendance.push({ id: doc.id, data: doc.data() });
+                });
+                
+                exportData.deceased.push(deceasedRecord);
+            }
+            
+            console.log("打包完成:", exportData);
+            
+            // 5. 下載 JSON 檔案
+            const dateStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const fileName = `doingSeven-backup-${dateStr}.json`;
+            const dataStr = JSON.stringify(exportData, null, 2); // 格式化 JSON
+            const dataBlob = new Blob([dataStr], { type: 'application/json;charset=utf-8' });
+            
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(dataBlob);
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        }
+
+        // =======================================================================
+        // 12. 自訂 UI 元件 (Alert / Confirm)
+        // =======================================================================
+        
+        // 顯示自訂 Alert
+        function showCustomAlert(message) {
+            const alertBox = document.getElementById('custom-alert');
+            const alertMessage = document.getElementById('custom-alert-message');
+            const alertOkButton = document.getElementById('custom-alert-ok');
+            
+            alertMessage.textContent = message;
+            alertBox.classList.remove('hidden-page');
+            
+            // 移除舊的監聽器並添加新的
+            const newOkButton = alertOkButton.cloneNode(true);
+            alertOkButton.parentNode.replaceChild(newOkButton, alertOkButton);
+            
+            newOkButton.addEventListener('click', () => {
+                alertBox.classList.add('hidden-page');
+            });
+        }
+
+        // 顯示自訂 Confirm
+        function showCustomConfirm(message) {
+            const confirmBox = document.getElementById('custom-confirm');
+            const confirmMessage = document.getElementById('custom-confirm-message');
+            const confirmYesButton = document.getElementById('custom-confirm-yes');
+            const confirmNoButton = document.getElementById('custom-confirm-no');
+            
+            confirmMessage.textContent = message;
+            confirmBox.classList.remove('hidden-page');
+            
+            return new Promise((resolve) => {
+                // 移除舊的監聽器並添加新的 (避免重複綁定)
+                const newYesButton = confirmYesButton.cloneNode(true);
+                confirmYesButton.parentNode.replaceChild(newYesButton, confirmYesButton);
+                
+                const newNoButton = confirmNoButton.cloneNode(true);
+                confirmNoButton.parentNode.replaceChild(newNoButton, confirmNoButton);
+                
+                newYesButton.addEventListener('click', () => {
+                    confirmBox.classList.add('hidden-page');
+                    resolve(true);
+                });
+                
+                newNoButton.addEventListener('click', () => {
+                    confirmBox.classList.add('hidden-page');
+                    resolve(false);
+                });
+            });
+        }
+
+    </script>
+
+    <!-- Tailwind 設定 (可選) -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        'sans': ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', '"Noto Sans"', 'sans-serif', '"Apple Color Emoji"', '"Segoe UI Emoji"', '"Segoe UI Symbol"', '"Noto Color Emoji"']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style>
+        /* 自訂樣式 */
+        .hidden-page {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 font-sans">
+
+    <!-- 
+      主容器
+      使用 max-w-4xl 在大螢幕上限制最大寬度，並在小螢幕上全寬
+      mx-auto 水平置中
+    -->
+    <div class="container mx-auto max-w-4xl min-h-screen bg-gray-100">
+
+        <!-- =======================
+             頁面 1: 往生菩薩列表 (主頁)
+        ========================= -->
+        <main id="page-list" class="p-4">
+            <!-- 標題欄 -->
+            <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10">
+                <h1 class="text-2xl font-semibold text-center">往生菩薩</h1>
+            </header>
+            
+            <!-- 讀取指示器 -->
+            <div id="loading-indicator" class="text-center p-8 hidden-page">
+                <p class="text-gray-500">正在從雲端讀取資料...</p>
+            </div>
+
+            <!-- 列表容器 -->
+            <div id="deceased-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+                <!-- 往生菩薩卡片將由 JS 動態插入 -->
+            </div>
+            
+        </main>
+
+        <!-- =======================
+             頁面 2: 新增往生菩薩
+        ========================= -->
+        <main id="page-add-deceased" class="p-4 hidden-page">
+            <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10 flex items-center">
+                <button onclick="navigateTo('page-list')" class="text-white mr-4">&larr; 返回</button>
+                <h1 class="text-2xl font-semibold">新增菩薩檔案</h1>
+            </header>
+
+            <form id="add-deceased-form" class="space-y-4 bg-white p-4 rounded-b-lg shadow-md">
+                
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700">基本資料</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="deceased-name" class="block text-sm font-medium text-gray-700">往生菩薩姓名 <span class="text-red-500">*</span></label>
+                        <input type="text" id="deceased-name" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="deceased-date" class="block text-sm font-medium text-gray-700">往生日期 <span class="text-red-500">*</span></label>
+                        <input type="date" id="deceased-date" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                </div>
+                <div>
+                    <label for="deceased-old-id" class="block text-sm font-medium text-gray-700">舊紀錄編號 (選填)</label>
+                    <input type="text" id="deceased-old-id" placeholder="例如：36091201" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700 pt-4">助念服務資料 (告別式前)</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="deceased-applicant-name" class="block text-sm font-medium text-gray-700">申請人 (選填)</label>
+                        <input type="text" id="deceased-applicant-name" placeholder="姓名" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="deceased-applicant-relation" class="block text-sm font-medium text-gray-700">關係 (選填)</label>
+                        <input type="text" id="deceased-applicant-relation" placeholder="例如：兒子" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="deceased-contact-name" class="block text-sm font-medium text-gray-700">聯絡人 (選填)</label>
+                        <input type="text" id="deceased-contact-name" placeholder="姓名" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="deceased-contact-relation" class="block text-sm font-medium text-gray-700">關係 (選填)</label>
+                        <input type="text" id="deceased-contact-relation" placeholder="例如：媳婦" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="deceased-chant-date" class="block text-sm font-medium text-gray-700">助念日期 (選填)</label>
+                        <input type="date" id="deceased-chant-date" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="deceased-chant-time" class="block text-sm font-medium text-gray-700">助念時間 (選填)</label>
+                        <input type="time" id="deceased-chant-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                </div>
+                <div>
+                    <label for="deceased-contact-phone" class="block text-sm font-medium text-gray-700">聯絡電話 (選填)</label>
+                    <input type="tel" id="deceased-contact-phone" placeholder="電話號碼" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+                <div>
+                    <label for="deceased-chant-location" class="block text-sm font-medium text-gray-700">助念地點 (選填)</label>
+                    <input type="text" id="deceased-chant-location" placeholder="例如：自宅 或 XX 殯儀館" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700 pt-4">後續關懷 (選填)</h2>
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">是否通知 (可複選)</label>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="deceased-notify-hundred" class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                        <label for="deceased-notify-hundred" class="ml-2 block text-sm text-gray-900">通知百日</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="deceased-notify-year1" class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                        <label for="deceased-notify-year1" class="ml-2 block text-sm text-gray-900">通知對年</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="deceased-notify-year3" class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                        <label for="deceased-notify-year3" class="ml-2 block text-sm text-gray-900">通知三年</label>
+                    </div>
+                </div>
+
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700 pt-4">來源資料</h2>
+                <div>
+                    <label for="deceased-referrer" class="block text-sm font-medium text-gray-700">介紹人 (選填)</label>
+                    <input type="text" id="deceased-referrer" placeholder="例如：王師兄" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+                <div>
+                    <label for="deceased-source" class="block text-sm font-medium text-gray-700">如何得知 (選填)</label>
+                    <select id="deceased-source" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                        <option value="">-- 請選擇 --</option>
+                        <option value="網路搜尋">網路搜尋</option>
+                        <option value="社群媒體 (FB/Line)">社群媒體 (FB/Line)</option>
+                        <option value="親友/蓮友介紹">親友/蓮友介紹</option>
+                        <option value="家屬曾參與過">家屬曾參與過</option>
+                        <option value="其他分會">其他分會</option>
+                        <option value="其他道場">其他道場</option>
+                        <option value="其他">其他</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="deceased-source-notes" class="block text-sm font-medium text-gray-700">說明 (選填)</label>
+                    <textarea id="deceased-source-notes" rows="3" placeholder="例如：介紹人姓名、或[其他]的具體內容..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
+                </div>
+                <div>
+                    <label for="deceased-remarks" class="block text-sm font-medium text-gray-700">備註 (選填)</label>
+                    <textarea id="deceased-remarks" rows="3" placeholder="任何需要補充的資訊..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
+                </div>
+
+                <button type="submit" class="w-full bg-teal-600 text-white py-3 px-4 rounded-md font-semibold hover:bg-teal-700 transition duration-200 text-lg">
+                    儲存檔案
+                </button>
+            </form>
+        </main>
+
+        <!-- =======================
+             頁面 3: 詳細管理頁面
+        ========================= -->
+        <main id="page-details" class="p-4 hidden-page">
+            <!-- 標題欄 -->
+            <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10 flex items-center justify-between">
+                <button onclick="navigateTo('page-list')" class="text-white mr-4">&larr; 返回列表</button>
+                <h1 class="text-2xl font-semibold">詳細資料</h1>
+                <button id="edit-deceased-button" class="text-white text-sm">修改</button>
+            </header>
+
+            <!-- 菩薩資訊卡 -->
+            <div class="bg-white p-4 rounded-b-lg shadow-md mb-4 space-y-2">
+                <h2 id="details-deceased-name" class="text-2xl font-bold text-teal-800"></h2>
+                <p id="details-deceased-date" class="text-gray-600"></p>
+                <p id="details-deceased-old-id" class="text-sm text-gray-500"></p>
+                <!-- 助念服務資料 -->
+                <div class="pt-2 border-t">
+                    <p id="details-applicant" class="text-sm text-gray-600"></p>
+                    <p id="details-contact" class="text-sm text-gray-600"></p>
+                    <p id="details-contact-phone" class="text-sm text-gray-600"></p>
+                    <p id="details-chant-date-time" class="text-sm text-gray-600"></p>
+                    <p id="details-chant-location" class="text-sm text-gray-600"></p>
+                </div>
+                <!-- 來源資料 -->
+                <div class="pt-2 border-t">
+                    <p id="details-deceased-referrer" class="text-sm text-gray-500"></p>
+                    <p id="details-deceased-source" class="text-sm text-gray-500"></p>
+                    <p id="details-deceased-source-notes" class="text-sm text-gray-500 pl-4"></p>
+                </div>
+                <!-- 備註 -->
+                <div class="pt-2 border-t">
+                     <p id="details-notify" class="text-sm text-gray-600 font-medium"></p>
+                     <p id="details-remarks" class="text-sm text-gray-600 whitespace-pre-wrap"></p>
+                </div>
+            </div>
+
+            <!-- 分隔標籤 (Tabs) -->
+            <div class="bg-white rounded-lg shadow-md">
+                <nav class="flex border-b">
+                    <button class="tab-button flex-1 py-3 px-4 text-center font-medium text-gray-500 hover:text-teal-600" data-target="tab-attendance">
+                        登記做七
+                    </button>
+                    <button class="tab-button flex-1 py-3 px-4 text-center font-medium text-gray-500 hover:text-teal-600" data-target="tab-family">
+                        家屬管理
+                    </button>
+                    <button class="tab-button flex-1 py-3 px-4 text-center font-medium text-gray-500 hover:text-teal-600" data-target="tab-overview">
+                        出席總覽
+                    </button>
+                </nav>
+
+                <!-- Tab 1: 登記做七 -->
+                <div id="tab-attendance" class="p-4 tab-content hidden-page">
+                    <form id="add-attendance-form" class="space-y-3 mb-4">
+                        <select id="attendance-family-select" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                            <option value="">-- 選擇家屬 --</option>
+                            <!-- 選項由 JS 動態載入 -->
+                        </select>
+                        <select id="attendance-type" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                            <option value="">-- 選擇七旬 --</option>
+                            <option value="頭七">頭七</option>
+                            <option value="二七">二七</option>
+                            <option value="三七">三七</option>
+                            <option value="四七">四七</option>
+                            <option value="五七">五七</option>
+                            <option value="六七">六七</option>
+                            <option value="滿七">滿七</option>
+                            <option value="百日">百日</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <input type="date" id="attendance-date" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                        <button type="submit" class="w-full bg-teal-600 text-white py-2 px-4 rounded-md font-semibold hover:bg-teal-700 transition duration-200">
+                            登記出席
+                        </button>
+                    </form>
+                    <h3 class="font-semibold mb-2">登記列表 (最新在最前)</h3>
+                    <ul id="attendance-list" class="divide-y divide-gray-200">
+                        <!-- 紀錄由 JS 動態載入 -->
+                    </ul>
+                </div>
+
+                <!-- Tab 2: 家屬管理 -->
+                <div id="tab-family" class="p-4 tab-content hidden-page">
+                    <form id="add-family-form" class="flex gap-2 mb-4">
+                        <input type="text" id="family-name" placeholder="家屬姓名" class="flex-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                        <input type="text" id="family-relation" placeholder="關係 (如:兒子)" class="flex-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                        <button type="submit" class="bg-teal-600 text-white py-2 px-3 rounded-md font-semibold hover:bg-teal-700 transition duration-200">
+                            新增
+                        </button>
+                    </form>
+                    <h3 class="font-semibold mb-2">家屬列表</h3>
+                    <ul id="family-list" class="divide-y divide-gray-200">
+                        <!-- 紀錄由 JS 動態載入 -->
+                    </ul>
+                </div>
+
+                <!-- Tab 3: 出席總覽 -->
+                <div id="tab-overview" class="p-4 tab-content hidden-page">
+                    <h3 class="font-semibold mb-2">家屬出席次數總覽</h3>
+                    <ul id="overview-list" class="divide-y divide-gray-200">
+                        <!-- 紀錄由 JS 動態載入 -->
+                    </ul>
+                </div>
+            </div>
+        </main>
+        
+        <!-- =======================
+             頁面 4: 修改菩薩檔案
+        ========================= -->
+        <main id="page-edit-deceased" class="p-4 hidden-page">
+            <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10 flex items-center">
+                <h1 class="text-2xl font-semibold">修改菩薩檔案</h1>
+            </header>
+
+            <form id="edit-deceased-form" class="space-y-4 bg-white p-4 rounded-b-lg shadow-md">
+                
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700">基本資料</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="edit-deceased-name" class="block text-sm font-medium text-gray-700">往生菩薩姓名 <span class="text-red-500">*</span></label>
+                        <input type="text" id="edit-deceased-name" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="edit-deceased-date" class="block text-sm font-medium text-gray-700">往生日期 <span class="text-red-500">*</span></label>
+                        <input type="date" id="edit-deceased-date" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                </div>
+                <div>
+                    <label for="edit-deceased-old-id" class="block text-sm font-medium text-gray-700">舊紀錄編號 (選填)</label>
+                    <input type="text" id="edit-deceased-old-id" placeholder="例如：36091201" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700 pt-4">助念服務資料 (告別式前)</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="edit-deceased-applicant-name" class="block text-sm font-medium text-gray-700">申請人 (選填)</label>
+                        <input type="text" id="edit-deceased-applicant-name" placeholder="姓名" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="edit-deceased-applicant-relation" class="block text-sm font-medium text-gray-700">關係 (選填)</label>
+                        <input type="text" id="edit-deceased-applicant-relation" placeholder="例如：兒子" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="edit-deceased-contact-name" class="block text-sm font-medium text-gray-700">聯絡人 (選填)</label>
+                        <input type="text" id="edit-deceased-contact-name" placeholder="姓名" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="edit-deceased-contact-relation" class="block text-sm font-medium text-gray-700">關係 (選填)</label>
+                        <input type="text" id="edit-deceased-contact-relation" placeholder="例如：媳婦" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="edit-deceased-chant-date" class="block text-sm font-medium text-gray-700">助念日期 (選填)</label>
+                        <input type="date" id="edit-deceased-chant-date" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                    <div>
+                        <label for="edit-deceased-chant-time" class="block text-sm font-medium text-gray-700">助念時間 (選填)</label>
+                        <input type="time" id="edit-deceased-chant-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                    </div>
+                </div>
+                <div>
+                    <label for="edit-deceased-contact-phone" class="block text-sm font-medium text-gray-700">聯絡電話 (選填)</label>
+                    <input type="tel" id="edit-deceased-contact-phone" placeholder="電話號碼" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+                <div>
+                    <label for="edit-deceased-chant-location" class="block text-sm font-medium text-gray-700">助念地點 (選填)</label>
+                    <input type="text" id="edit-deceased-chant-location" placeholder="例如：自宅 或 XX 殯儀館" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700 pt-4">後續關懷 (選填)</h2>
+                <div class="space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">是否通知 (可複選)</label>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="edit-deceased-notify-hundred" class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                        <label for="edit-deceased-notify-hundred" class="ml-2 block text-sm text-gray-900">通知百日</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="edit-deceased-notify-year1" class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                        <label for="edit-deceased-notify-year1" class="ml-2 block text-sm text-gray-900">通知對年</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="checkbox" id="edit-deceased-notify-year3" class="h-4 w-4 text-teal-600 border-gray-300 rounded focus:ring-teal-500">
+                        <label for="edit-deceased-notify-year3" class="ml-2 block text-sm text-gray-900">通知三年</label>
+                    </div>
+                </div>
+
+                <h2 class="text-lg font-semibold border-b pb-2 text-teal-700 pt-4">來源資料</h2>
+                <div>
+                    <label for="edit-deceased-referrer" class="block text-sm font-medium text-gray-700">介紹人 (選填)</label>
+                    <input type="text" id="edit-deceased-referrer" placeholder="例如：王師兄" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                </div>
+                <div>
+                    <label for="edit-deceased-source" class="block text-sm font-medium text-gray-700">如何得知 (選填)</label>
+                    <select id="edit-deceased-source" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+                        <option value="">-- 請選擇 --</option>
+                        <option value="網路搜尋">網路搜尋</option>
+                        <option value="社群媒體 (FB/Line)">社群媒體 (FB/Line)</option>
+                        <option value="親友/蓮友介紹">親友/蓮友介紹</option>
+                        <option value="家屬曾參與過">家屬曾參與過</option>
+                        <option value="其他分會">其他分會</option>
+                        <option valueD="其他道場">其他道場</option>
+                        <option value="其他">其他</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="edit-deceased-source-notes" class="block text-sm font-medium text-gray-700">說明 (選填)</label>
+                    <textarea id="edit-deceased-source-notes" rows="3" placeholder="例如：介紹人姓名、或[其他]的具體內容..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
+                </div>
+                <div>
+                    <label for="edit-deceased-remarks" class="block text-sm font-medium text-gray-700">備註 (選填)</label>
+                    <textarea id="edit-deceased-remarks" rows="3" placeholder="任何需要補充的資訊..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
+                </div>
+
+                <div class="flex gap-4">
+                     <button type="button" id="cancel-edit-button" class="w-1/2 bg-gray-300 text-gray-700 py-3 px-4 rounded-md font-semibold hover:bg-gray-400 transition duration-200 text-lg">
+                        取消
+                    </button>
+                    <button type="submit" class="w-1/2 bg-teal-600 text-white py-3 px-4 rounded-md font-semibold hover:bg-teal-700 transition duration-200 text-lg">
+                        儲存變更
+                    </button>
+                </div>
+            </form>
+        </main>
+
+    </div> <!-- End container -->
+    
+    <!-- 全局浮動按鈕 (FAB) -->
+    <!-- 新增按鈕 (右下) -->
+    <button id="add-deceased-fab" class="fixed bottom-6 right-6 bg-teal-600 text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-3xl hover:bg-teal-700 transition-transform hover:scale-110">
+        <!-- SVG Plus Icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-8 h-8">
+            <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 9a.75.75 0 0 0-1.5 0v2.25H9a.75.75 0 0 0 0 1.5h2.25V15a.75.75 0 0 0 1.5 0v-2.25H15a.75.75 0 0 0 0-1.5h-2.25V9Z" clip-rule="evenodd" />
+        </svg>
+    </button>
+    
+    <!-- 匯出按鈕 (左下) -->
+    <button id="export-button" class="fixed bottom-6 left-6 bg-gray-600 text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-3xl hover:bg-gray-700 transition-transform hover:scale-110">
+        <!-- SVG Download Icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-7 h-7">
+            <path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v11.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06l3.22 3.22V3a.75.75 0 0 1 .75-.75Zm-9 13.5a.75.75 0 0 1 .75.75v2.25a1.5 1.5 0 0 0 1.5 1.5h13.5a1.5 1.5 0 0 0 1.5-1.5V16.5a.75.75 0 0 1 1.5 0v2.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V16.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
+        </svg>
+    </button>
+
+    <!-- 自訂 Alert / Confirm / Loading 彈窗 -->
+    <!-- 匯出讀取中 -->
+    <div id="export-loading-text" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page">
+        <div class="bg-white p-6 rounded-lg shadow-xl text-center">
+            <p class="text-lg font-medium text-gray-700">正在打包資料，請稍候...</p>
+        </div>
+    </div>
+    
+    <!-- 自訂 Alert -->
+    <div id="custom-alert" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">通知</h3>
+            <p id="custom-alert-message" class="text-sm text-gray-600 mb-6"></p>
+            <div class="flex justify-end">
+                <button id="custom-alert-ok" class="bg-teal-600 text-white px-4 py-2 rounded-md font-semibold hover:bg-teal-700">
+                    確定
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 自訂 Confirm -->
+    <div id="custom-confirm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page">
+        <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">請確認</h3>
+            <p id="custom-confirm-message" class="text-sm text-gray-600 mb-6"></p>
+            <div class="flex justify-end gap-2">
+                <button id="custom-confirm-no" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-md font-semibold hover:bg-gray-300">
+                    取消
+                </button>
+                <button id="custom-confirm-yes" class="bg-teal-600 text-white px-4 py-2 rounded-md font-semibold hover:bg-teal-700">
+                    確定
+                </button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+
+
