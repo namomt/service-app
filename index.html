@@ -23,7 +23,7 @@
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     /**************************************************************
-     * 2) 右上角「連線狀態徽章」 + 全域錯誤攔截
+     * 2) 右上角「連線狀態徽章」+ 全域錯誤攔截 + 內嵌狀態文字
      **************************************************************/
     const chip = document.createElement("div");
     chip.id = "status-chip";
@@ -32,6 +32,9 @@
     document.addEventListener("DOMContentLoaded", () => {
       document.body.appendChild(chip);
     });
+
+    let inlineStatusEl = null; // 於 setupDomRefs 後指向 #inline-status
+
     function setChip(text, level = "info") {
       chip.textContent = text;
       chip.classList.remove("bg-gray-500","bg-sky-500","bg-green-600","bg-amber-500","bg-red-600");
@@ -39,6 +42,7 @@
         : level === "warn" ? "bg-amber-500"
         : level === "info" ? "bg-sky-500"
         : "bg-red-600");
+      if (inlineStatusEl) inlineStatusEl.textContent = text;
       console.log(`[status] ${text}`);
     }
     window.addEventListener("error", (e) => {
@@ -50,10 +54,10 @@
       console.error(e);
     });
     window.addEventListener("online", () => setChip("網路已連線", "info"));
-    window.addEventListener("offline", () => setChip("網路離線", "warn"));
+    window.addEventListener("offline", () => setChip("目前離線", "warn"));
 
     /**************************************************************
-     * 3) Firebase 設定：Canvas 優先，否則 fallback 固定專案
+     * 3) Firebase 設定：Canvas 優先；否則固定 servicelogs-8577c
      **************************************************************/
     let firebaseConfig = null;
     try {
@@ -78,7 +82,7 @@
     const appId = firebaseConfig?.projectId || "servicelogs-8577c";
 
     /**************************************************************
-     * 4) 初始化 Firebase + Auth
+     * 4) 初始化 Firebase + Auth（開啟自動連線測試）
      **************************************************************/
     let db, auth;
     let currentUserId = null;
@@ -86,26 +90,12 @@
     let deceasedUnsubscribe = null;
     let attendanceUnsubscribe = null;
 
-    // 連線自動偵測（每 60 秒 ping 一次）
-    let connTimer = null;
-    async function connectivityPing() {
-      try {
-        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
-        const ts = new Date();
-        const hh = String(ts.getHours()).padStart(2,"0");
-        const mm = String(ts.getMinutes()).padStart(2,"0");
-        setChip(`連線正常 • ${hh}:${mm}`, "ok");
-      } catch (e) {
-        setChip(`連線測試失敗：${e?.message || e}`, "err");
-      }
-    }
-
     document.addEventListener("DOMContentLoaded", async () => {
       try {
         const app = initializeApp(firebaseConfig);
         auth = getAuth(app);
         db = getFirestore(app);
-        setLogLevel("debug");
+        setLogLevel("warn");
         setChip("初始化完成", "info");
       } catch (e) {
         setChip("初始化失敗", "err");
@@ -114,21 +104,32 @@
       }
       setupDomRefs();
       setupEventListeners();
-      updateTodayInfo();
       setupAuthListener();
+
+      // 自動測一次讀取（不等待登入，若規則需要登入會在登入後再測一次）
+      autoTestConnection();
+      // 顯示今日日期（含星期）
+      updateToday();
     });
+
+    async function autoTestConnection() {
+      try {
+        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
+        setChip(snap ? "✅ 測試：成功讀取 Firestore" : "⚠️ 測試：讀取結果為空", "ok");
+      } catch (e) {
+        // 等待登入之後再試一次
+        setChip(`讀取測試等待登入：${e?.message || e}`, "warn");
+      }
+    }
 
     async function setupAuthListener() {
       onAuthStateChanged(auth, async (user) => {
         if (user) {
           currentUserId = user.uid;
           setChip("已登入（匿名）", "ok");
+          // 登入後再測一次，並開始即時監聽
+          await autoTestConnection();
           await loadDeceasedList();
-          // 啟動自動連線偵測（每 60 秒）
-          if (!connTimer) {
-            connectivityPing(); // 先測一次
-            connTimer = setInterval(connectivityPing, 60000);
-          }
         } else {
           setChip("登入中…", "warn");
           try {
@@ -184,7 +185,7 @@
     let editDeceasedAttendedHundredInput, editDeceasedAttendedYear1Input, editDeceasedAttendedYear3Input;
     let cancelEditButton, deleteDeceasedButton;
     let backButtonAdd, backButtonDetails;
-    let todayInfo;
+    let todayEl;
 
     function setupDomRefs() {
       pageList = document.getElementById("page-list");
@@ -197,6 +198,9 @@
       addDeceasedFab = document.getElementById("add-deceased-fab");
       exportButton = document.getElementById("export-button");
       exportLoadingIndicator = document.getElementById("export-loading-text");
+
+      inlineStatusEl = document.getElementById("inline-status");
+      todayEl = document.getElementById("today-label");
 
       addDeceasedForm = document.getElementById("add-deceased-form");
       deceasedNameInput = document.getElementById("deceased-name");
@@ -268,12 +272,20 @@
 
       backButtonAdd = document.getElementById("back-button-add");
       backButtonDetails = document.getElementById("back-button-details");
+    }
 
-      todayInfo = document.getElementById("today-info");
+    function updateToday() {
+      if (!todayEl) return;
+      const d = new Date();
+      const weekdays = ["日","一","二","三","四","五","六"];
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      todayEl.textContent = `${yyyy}/${mm}/${dd}（${weekdays[d.getDay()]}）`;
     }
 
     /**************************************************************
-     * 7) 事件綁定（恢復正常功能；保留返回按鈕修復）
+     * 7) 事件綁定（返回按鈕修復 & 匯出/新增）
      **************************************************************/
     function navigateTo(pageId) {
       [pageList, pageAddDeceased, pageDetails, pageEditDeceased].forEach(page => {
@@ -284,12 +296,13 @@
     }
     function setupEventListeners() {
       addDeceasedFab?.addEventListener("click", () => {
+        if (!currentUserId) return showCustomAlert("未登入狀態無法新增。");
         addDeceasedForm.reset();
         navigateTo("page-add-deceased");
       });
       exportButton?.addEventListener("click", async () => {
         if (!currentUserId) return showCustomAlert("請先登入");
-        if (await showCustomConfirm("您確定要匯出所有資料嗎？這可能會花費一些時間。")) {
+        if (await showCustomConfirm("您確定要匯出所有資料嗎？")) {
           exportLoadingIndicator.classList.remove("hidden-page");
           try {
             await exportAllData();
@@ -313,7 +326,7 @@
     }
 
     /**************************************************************
-     * 8) 主列表（依「往生日期」由新到舊排序）
+     * 8) 主列表（依「往生日期」由新到舊排序）+ 連線狀態更新
      **************************************************************/
     let firstListSnap = true;
     async function loadDeceasedList() {
@@ -326,14 +339,11 @@
       deceasedUnsubscribe = onSnapshot(qy, (snap) => {
         loadingIndicator.classList.add("hidden-page");
         if (firstListSnap) {
-          const ts = new Date();
-          const hh = String(ts.getHours()).padStart(2,"0");
-          const mm = String(ts.getMinutes()).padStart(2,"0");
-          setChip(`連線正常 • ${hh}:${mm}`, "ok");
+          setChip("連線正常（已接收資料）", "ok");
           firstListSnap = false;
         }
         if (snap.empty) {
-          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右上角 + 來新增。</p>';
+          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請按右上角「新增」建立。</p>';
           return;
         }
         const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
@@ -342,28 +352,32 @@
             const dbb = b.deceasedDate ? new Date(b.deceasedDate) : new Date(0);
             return dbb - da;
           });
-        deceasedList.innerHTML = "";
-        docs.forEach(data => {
-          const el = document.createElement("div");
-          el.className = "bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow cursor-pointer";
-          el.innerHTML = `
-            <h3 class="text-lg font-semibold text-teal-700">${data.name}</h3>
-            <p class="text-sm text-gray-600">往生日期：${data.deceasedDate || "未填寫"}</p>
-            ${data.contactName ? `<p class="text-sm text-gray-600">聯絡人：${data.contactName}（${data.contactRelation || "?"}）</p>` : ""}
-            ${data.contactPhone ? `<p class="text-sm text-gray-600">電話：${data.contactPhone}</p>` : ""}
-          `;
-          el.addEventListener("click", () => {
-            currentDeceasedId = data.id;
-            loadDeceasedDetails(currentDeceasedId);
-            navigateTo("page-details");
-          });
-          deceasedList.appendChild(el);
-        });
+        renderDeceasedCards(docs);
       }, (err) => {
         console.error("[list] 讀取失敗：", err);
         setChip("讀取失敗", "err");
         loadingIndicator.classList.add("hidden-page");
         deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
+      });
+    }
+
+    function renderDeceasedCards(docs) {
+      deceasedList.innerHTML = "";
+      docs.forEach(data => {
+        const el = document.createElement("div");
+        el.className = "bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow cursor-pointer";
+        el.innerHTML = `
+          <h3 class="text-lg font-semibold text-teal-700">${data.name}</h3>
+          <p class="text-sm text-gray-600">往生日期：${data.deceasedDate || "未填寫"}</p>
+          ${data.contactName ? `<p class="text-sm text-gray-600">聯絡人：${data.contactName}（${data.contactRelation || "?"}）</p>` : ""}
+          ${data.contactPhone ? `<p class="text-sm text-gray-600">電話：${data.contactPhone}</p>` : ""}
+        `;
+        el.addEventListener("click", () => {
+          currentDeceasedId = data.id;
+          loadDeceasedDetails(currentDeceasedId);
+          navigateTo("page-details");
+        });
+        deceasedList.appendChild(el);
       });
     }
 
@@ -417,49 +431,13 @@
       }
     }
 
-    async function loadEditForm() {
-      if (!currentDeceasedId) return;
-      try {
-        const snap = await getDoc(doc(db, getDeceasedCollectionPath(), currentDeceasedId));
-        if (!snap.exists()) {
-          showCustomAlert("找不到資料，可能已被刪除。");
-          return navigateTo("page-list");
-        }
-        const d = snap.data();
-        editDeceasedNameInput.value = d.name || "";
-        editDeceasedDateInput.value = d.deceasedDate || "";
-        editDeceasedReferrerInput.value = d.referrer || "";
-        editDeceasedSourceSelect.value = d.source || "";
-        editDeceasedSourceNotesInput.value = d.sourceNotes || "";
-        editDeceasedApplicantNameInput.value = d.applicantName || "";
-        editDeceasedApplicantRelInput.value = d.applicantRelation || "";
-        editDeceasedContactNameInput.value = d.contactName || "";
-        editDeceasedContactRelInput.value = d.contactRelation || "";
-        editDeceasedContactPhoneInput.value = d.contactPhone || "";
-        editDeceasedChantDateInput.value = d.chantDate || "";
-        editDeceasedChantTimeInput.value = d.chantTime || "";
-        editDeceasedChantLocationInput.value = d.chantLocation || "";
-        editDeceasedRemarksInput.value = d.remarks || "";
-        editDeceasedNotifyHundredInput.checked = !!d.notifyHundred;
-        editDeceasedNotifyYear1Input.checked = !!d.notifyYear1;
-        editDeceasedNotifyYear3Input.checked = !!d.notifyYear3;
-        editDeceasedAttendedHundredInput.checked = !!d.attendedHundred;
-        editDeceasedAttendedYear1Input.checked = !!d.attendedYear1;
-        editDeceasedAttendedYear3Input.checked = !!d.attendedYear3;
-        navigateTo("page-edit-deceased");
-      } catch (e) {
-        console.error("[edit] 載入失敗：", e);
-        showCustomAlert("加載資料失敗。");
-      }
-    }
-
     /**************************************************************
      * 9) CRUD：新增/修改/刪除（含做七登記）
      **************************************************************/
     async function handleAddDeceased(e) {
       e.preventDefault();
       if (!currentUserId || !deceasedNameInput.value || !deceasedDateInput.value) {
-        return showCustomAlert("請填寫菩薩姓名和往生日期。");
+        return showCustomAlert("請（登入後）填寫菩薩姓名和往生日期。");
       }
       const payload = {
         name: deceasedNameInput.value,
@@ -497,9 +475,46 @@
       }
     }
 
+    async function loadEditForm() {
+      if (!currentDeceasedId) return;
+      if (!currentUserId) return showCustomAlert("未登入狀態不可修改。");
+      try {
+        const snap = await getDoc(doc(db, getDeceasedCollectionPath(), currentDeceasedId));
+        if (!snap.exists()) {
+          showCustomAlert("找不到資料，可能已被刪除。");
+          return navigateTo("page-list");
+        }
+        const d = snap.data();
+        editDeceasedNameInput.value = d.name || "";
+        editDeceasedDateInput.value = d.deceasedDate || "";
+        editDeceasedReferrerInput.value = d.referrer || "";
+        editDeceasedSourceSelect.value = d.source || "";
+        editDeceasedSourceNotesInput.value = d.sourceNotes || "";
+        editDeceasedApplicantNameInput.value = d.applicantName || "";
+        editDeceasedApplicantRelInput.value = d.applicantRelation || "";
+        editDeceasedContactNameInput.value = d.contactName || "";
+        editDeceasedContactRelInput.value = d.contactRelation || "";
+        editDeceasedContactPhoneInput.value = d.contactPhone || "";
+        editDeceasedChantDateInput.value = d.chantDate || "";
+        editDeceasedChantTimeInput.value = d.chantTime || "";
+        editDeceasedChantLocationInput.value = d.chantLocation || "";
+        editDeceasedRemarksInput.value = d.remarks || "";
+        editDeceasedNotifyHundredInput.checked = !!d.notifyHundred;
+        editDeceasedNotifyYear1Input.checked = !!d.notifyYear1;
+        editDeceasedNotifyYear3Input.checked = !!d.notifyYear3;
+        editDeceasedAttendedHundredInput.checked = !!d.attendedHundred;
+        editDeceasedAttendedYear1Input.checked = !!d.attendedYear1;
+        editDeceasedAttendedYear3Input.checked = !!d.attendedYear3;
+        navigateTo("page-edit-deceased");
+      } catch (e) {
+        console.error("[edit/load] 失敗：", e);
+        showCustomAlert("加載資料失敗。");
+      }
+    }
+
     async function handleEditDeceased(e) {
       e.preventDefault();
-      if (!currentDeceasedId || !currentUserId) return;
+      if (!currentDeceasedId || !currentUserId) return showCustomAlert("未登入或無效 ID。");
       const payload = {
         name: editDeceasedNameInput.value,
         deceasedDate: editDeceasedDateInput.value,
@@ -533,7 +548,7 @@
     }
 
     async function handleDeleteDeceased() {
-      if (!currentDeceasedId || !currentUserId) return;
+      if (!currentDeceasedId || !currentUserId) return showCustomAlert("未登入狀態不可刪除。");
       const ok = await showCustomConfirm("您確定要永久刪除此筆檔案嗎？\\n\\n所有相關的「做七紀錄」將會一併刪除。此操作無法復原。");
       if (!ok) return;
       try {
@@ -555,6 +570,7 @@
     async function handleAddAttendance(e) {
       e.preventDefault();
       if (!currentDeceasedId) return;
+      if (!currentUserId) return showCustomAlert("未登入狀態不可登記。");
       const name = (attendanceFamilyNameInput.value || "").trim();
       if (!name || !attendanceTypeSelect.value || !attendanceDateInput.value) {
         return showCustomAlert("請填寫出席者姓名、七旬類別與日期。");
@@ -593,6 +609,7 @@
             <button class="text-red-500 hover:text-red-700 text-sm" data-id="${row.id}">刪除</button>
           `;
           li.querySelector("button").addEventListener("click", async () => {
+            if (!currentUserId) return showCustomAlert("未登入狀態不可刪除。");
             if (await showCustomConfirm(\`您確定要刪除這筆「\${row.type}」紀錄嗎？\`)) {
               try {
                 await deleteDoc(doc(db, getAttendanceCollectionPath(deceasedId), row.id));
@@ -665,19 +682,6 @@
         newNo.addEventListener("click", () => { box.classList.add("hidden-page"); resolve(false); });
       });
     }
-
-    /**************************************************************
-     * 12) 今日日期（YYYY/MM/DD 週X）
-     **************************************************************/
-    function updateTodayInfo() {
-      if (!todayInfo) return;
-      const d = new Date();
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2,'0');
-      const day = String(d.getDate()).padStart(2,'0');
-      const wk = "日一二三四五六"[d.getDay()];
-      todayInfo.textContent = `${y}/${m}/${day}（週${wk}）`;
-    }
   </script>
 </head>
 
@@ -685,30 +689,35 @@
   <div class="container mx-auto max-w-4xl min-h-screen bg-gray-100">
 
     <!-- =======================
-         頁面 1: 往生菩薩列表
+         頁面 1: 往生菩薩列表（頭部含：左匯出 / 中標題 / 右新增；下方顯示日期與狀態）
     ========================= -->
     <main id="page-list" class="p-4">
       <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-3 sticky top-0 z-10">
-        <div class="flex items-center justify-between">
-          <!-- 左：匯出 -->
-          <button id="export-button" class="p-2 rounded bg-white/10 hover:bg-white/20" title="下載 JSON 備份">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
-              <path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v11.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06l3.22 3.22V3a.75.75 0 0 1 .75-.75Zm-9 13.5a.75.75 0 0 1 .75.75v2.25a1.5 1.5 0 0 0 1.5 1.5h13.5a1.5 1.5 0 0 0 1.5-1.5V16.5a.75.75 0 0 1 1.5 0v2.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V16.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
-            </svg>
-          </button>
-
-          <!-- 中：標題 + 日期 -->
-          <div class="text-center">
-            <h2 class="text-2xl font-semibold">往生菩薩</h2>
-            <div id="today-info" class="text-[11px] opacity-90 mt-0.5"></div>
+        <div class="grid grid-cols-3 items-center">
+          <div class="justify-self-start">
+            <button id="export-button" class="flex items-center gap-2 text-sm px-3 py-1 rounded bg-white/10 hover:bg-white/20">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+                <path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v11.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06l3.22 3.22V3a.75.75 0 0 1 .75-.75Zm-9 13.5a.75.75 0 0 1 .75.75v2.25a1.5 1.5 0 0 0 1.5 1.5h13.5a1.5 1.5 0 0 0 1.5-1.5V16.5a.75.75 0 0 1 1.5 0v2.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V16.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
+              </svg>
+              <span class="hidden sm:inline">匯出</span>
+            </button>
           </div>
-
-          <!-- 右：新增 -->
-          <button id="add-deceased-fab" class="p-2 rounded bg-white/10 hover:bg-white/20" title="新增檔案">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-7 h-7">
-              <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 9a.75.75 0 0 0-1.5 0v2.25H9a.75.75 0 0 0 0 1.5h2.25V15a.75.75 0 0 0 1.5 0v-2.25H15a.75.75 0 0 0 0-1.5h-2.25V9Z" clip-rule="evenodd" />
-            </svg>
-          </button>
+          <div class="justify-self-center">
+            <h2 class="text-2xl font-semibold text-center">往生菩薩</h2>
+          </div>
+          <div class="justify-self-end">
+            <button id="add-deceased-fab" class="flex items-center gap-2 text-sm px-3 py-1 rounded bg-white/10 hover:bg-white/20">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
+                <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 9a.75.75 0 0 0-1.5 0v2.25H9a.75.75 0 0 0 0 1.5h2.25V15a.75.75 0 0 0 1.5 0v-2.25H15a.75.75 0 0 0 0-1.5h-2.25V9Z" clip-rule="evenodd" />
+              </svg>
+              <span class="hidden sm:inline">新增</span>
+            </button>
+          </div>
+        </div>
+        <div class="mt-1 flex flex-wrap items-center justify-center gap-3 text-xs text-white/90">
+          <span id="today-label"></span>
+          <span>｜</span>
+          <span>連線狀態：<span id="inline-status">啟動中…</span></span>
         </div>
       </header>
 
