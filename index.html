@@ -9,11 +9,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     .hidden-page { display: none !important; }
-    /* 自訂：小型狀態點（常駐） */
-    #status-dot {
-      width: 12px;
-      height: 12px;
-    }
+    .conn-dot { width: 10px; height: 10px; border-radius: 9999px; display: inline-block; vertical-align: middle; }
   </style>
 
   <script type="module">
@@ -28,30 +24,34 @@
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     /**************************************************************
-     * 2) 右上角「連線狀態燈」─ 常駐、低干擾
+     * 2) 右上角「連線狀態徽章」：僅在警告/錯誤時顯示文字
      **************************************************************/
-    const statusDot = document.createElement("div");
-    statusDot.id = "status-dot";
-    statusDot.className = "fixed top-3 right-3 rounded-full shadow ring-1 ring-white/60 bg-gray-400";
-    statusDot.title = "啟動中…";
+    const chip = document.createElement("div");
+    chip.id = "status-chip";
+    chip.className = "fixed top-3 right-3 text-xs px-3 py-1 rounded-full text-white bg-gray-500 shadow cursor-default opacity-0 transition-opacity";
+    chip.textContent = "啟動中…";
     document.addEventListener("DOMContentLoaded", () => {
-      document.body.appendChild(statusDot);
+      document.body.appendChild(chip);
     });
-    function setStatusLight(text, level = "info") {
-      statusDot.title = text || "";
-      statusDot.classList.remove("bg-gray-400","bg-sky-500","bg-green-600","bg-amber-500","bg-red-600");
-      statusDot.classList.add(level === "ok" ? "bg-green-600"
-        : level === "warn" ? "bg-amber-500"
-        : level === "info" ? "bg-sky-500"
-        : "bg-red-600");
-      console.log("[status]", text);
+    function setChip(text, level = "info") {
+      chip.textContent = text;
+      chip.classList.remove("bg-gray-500","bg-sky-500","bg-green-600","bg-amber-500","bg-red-600","opacity-0");
+      const cls = level === "ok" ? "bg-green-600" : level === "warn" ? "bg-amber-500" : level === "info" ? "bg-sky-500" : "bg-red-600";
+      chip.classList.add(cls);
+      // 僅在 warn/err 顯示；ok/info 則淡出
+      if (level === "ok" || level === "info") {
+        chip.classList.add("opacity-0");
+      }
+      console.log(`[status] ${text}`);
     }
     window.addEventListener("error", (e) => {
-      setStatusLight(`錯誤：${e.message}`, "err");
+      setChip(`錯誤：${e.message}`, "err");
+      setConnDot("err", "執行期錯誤");
       console.error(e);
     });
     window.addEventListener("unhandledrejection", (e) => {
-      setStatusLight(`錯誤：${e.reason}`, "err");
+      setChip(`錯誤：${e.reason}`, "err");
+      setConnDot("err", "未處理的 Promise 拒絕");
       console.error(e);
     });
 
@@ -89,50 +89,66 @@
     let deceasedUnsubscribe = null;
     let attendanceUnsubscribe = null;
 
-    const allowReadonlyOnLocalhost = ["localhost", "127.0.0.1"].includes(location.hostname);
+    // 供「小綠燈」使用
+    let connDotEl = null;
+    function setConnDot(level = "info", title = "") {
+      if (!connDotEl) return;
+      connDotEl.title = title || connDotEl.title || "";
+      connDotEl.classList.remove("bg-gray-400","bg-sky-500","bg-green-600","bg-amber-500","bg-red-600");
+      connDotEl.classList.add(level === "ok" ? "bg-green-600"
+        : level === "warn" ? "bg-amber-500"
+        : level === "info" ? "bg-sky-500"
+        : "bg-red-600");
+    }
 
     document.addEventListener("DOMContentLoaded", async () => {
+      connDotEl = document.getElementById("conn-dot");
+      setConnDot("warn", "初始化中…");
+
       try {
         const app = initializeApp(firebaseConfig);
         auth = getAuth(app);
         db = getFirestore(app);
         setLogLevel("debug");
-        setStatusLight("初始化完成", "info");
+        setChip("初始化完成", "info");
+        setConnDot("warn", "初始化完成，等待登入…");
       } catch (e) {
-        setStatusLight("初始化失敗", "err");
+        setChip("初始化失敗", "err");
+        setConnDot("err", "初始化失敗");
         console.error("[init] 失敗：", e);
         return;
       }
       setupDomRefs();
       setupEventListeners();
       setupAuthListener();
+      // 啟動後主動測一次讀取（不依賴按鈕）
+      testConnectionOnce();
     });
 
     async function setupAuthListener() {
       onAuthStateChanged(auth, async (user) => {
         if (user) {
           currentUserId = user.uid;
-          setStatusLight("已登入（匿名）", "ok");
-          // 1) 即刻載入列表（onSnapshot 會在第一筆快照時把燈變綠）
+          setChip("已登入（匿名）", "ok");
+          setConnDot("ok", "已登入（匿名）");
           await loadDeceasedList();
-          // 2) 額外做一次讀取測試，維持燈號資訊
-          try { await testConnectionOnce(); } catch {}
         } else {
-          setStatusLight("登入中…", "warn");
+          setChip("登入中…", "warn");
+          setConnDot("warn", "登入中…");
           try {
             if (typeof __initial_auth_token !== "undefined" && __initial_auth_token) {
               await signInWithCustomToken(auth, __initial_auth_token);
-              setStatusLight("已登入（自訂 Token）", "ok");
+              setChip("已登入（自訂 Token）", "ok");
+              setConnDot("ok", "已登入（自訂 Token）");
             } else {
               await signInAnonymously(auth);
-              setStatusLight("已登入（匿名）", "ok");
+              setChip("已登入（匿名）", "ok");
+              setConnDot("ok", "已登入（匿名）");
             }
           } catch (err) {
+            setChip(`登入失敗：${err?.message || err}`, "err");
+            setConnDot("err", "登入失敗");
             console.error("[auth] 登入失敗：", err);
-            setStatusLight(`登入失敗：${err?.message || err}`, "err");
-            if (allowReadonlyOnLocalhost) {
-              loadDeceasedListReadOnly();
-            }
           }
         }
       });
@@ -261,7 +277,7 @@
     }
 
     /**************************************************************
-     * 7) 事件綁定（保持原有功能；返回按鈕使用 ID 綁定）
+     * 7) 事件綁定（保留返回按鈕修復；不動其他流程）
      **************************************************************/
     function navigateTo(pageId) {
       [pageList, pageAddDeceased, pageDetails, pageEditDeceased].forEach(page => {
@@ -279,7 +295,7 @@
       exportButton?.addEventListener("click", async () => {
         if (!currentUserId) return showCustomAlert("請先登入");
         if (await showCustomConfirm("您確定要匯出所有資料嗎？")) {
-          exportLoadingIndicator?.classList?.remove("hidden-page");
+          exportLoadingIndicator.classList.remove("hidden-page");
           try {
             await exportAllData();
             showCustomAlert("資料匯出成功！已下載 JSON 備份檔。");
@@ -287,7 +303,7 @@
             console.error("[export] 失敗：", e);
             showCustomAlert("匯出失敗，請檢查網路連線。");
           } finally {
-            exportLoadingIndicator?.classList?.add("hidden-page");
+            exportLoadingIndicator.classList.add("hidden-page");
           }
         }
       });
@@ -307,19 +323,19 @@
     let firstListSnap = true;
     async function loadDeceasedList() {
       if (!currentUserId) return;
-      loadingIndicator?.classList?.remove("hidden-page");
-      if (deceasedList) deceasedList.innerHTML = "";
+      loadingIndicator.classList.remove("hidden-page");
+      deceasedList.innerHTML = "";
       if (deceasedUnsubscribe) deceasedUnsubscribe();
 
       const qy = query(collection(db, getDeceasedCollectionPath()));
       deceasedUnsubscribe = onSnapshot(qy, (snap) => {
-        loadingIndicator?.classList?.add("hidden-page");
+        loadingIndicator.classList.add("hidden-page");
         if (firstListSnap) {
-          setStatusLight("連線正常", "ok"); // 第一筆快照即視為已連線
+          setConnDot("ok", "已連線到 Firestore（收到列表更新）");
           firstListSnap = false;
         }
         if (snap.empty) {
-          if (deceasedList) deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右下角按鈕新增。</p>';
+          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右下角按鈕新增。</p>';
           return;
         }
         const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
@@ -331,49 +347,24 @@
         renderDeceasedCards(docs, /*interactive=*/true);
       }, (err) => {
         console.error("[list] 讀取失敗：", err);
-        setStatusLight("讀取失敗", "err");
-        loadingIndicator?.classList?.add("hidden-page");
-        if (deceasedList) deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
+        setChip("讀取失敗", "err");
+        setConnDot("err", "列表讀取失敗");
+        loadingIndicator.classList.add("hidden-page");
+        deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
       });
     }
 
-    // 未登入的本機只讀回退：使用 getDocs 取一次快照
-    async function loadDeceasedListReadOnly() {
-      try {
-        loadingIndicator?.classList?.remove("hidden-page");
-        if (deceasedList) deceasedList.innerHTML = "";
-        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
-        loadingIndicator?.classList?.add("hidden-page");
-        if (snap.empty) {
-          if (deceasedList) deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">（只讀）目前沒有任何資料。</p>';
-          return;
-        }
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => {
-            const da = a.deceasedDate ? new Date(a.deceasedDate) : new Date(0);
-            const dbb = b.deceasedDate ? new Date(b.deceasedDate) : new Date(0);
-            return dbb - da;
-          });
-        renderDeceasedCards(rows, /*interactive=*/false);
-        setStatusLight("（只讀）成功讀取 Firestore", "warn");
-      } catch (e) {
-        console.error("[readonly] 讀取失敗：", e);
-        setStatusLight("（只讀）讀取失敗", "err");
-      }
-    }
-
     function renderDeceasedCards(docs, interactive) {
-      if (!deceasedList) return;
       deceasedList.innerHTML = "";
       docs.forEach(data => {
         const el = document.createElement("div");
         el.className = "bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow" + (interactive ? " cursor-pointer" : " opacity-90");
-        el.innerHTML = \`
-          <h3 class="text-lg font-semibold text-teal-700">\${data.name}</h3>
-          <p class="text-sm text-gray-600">往生日期：\${data.deceasedDate || "未填寫"}</p>
-          \${data.contactName ? \`<p class="text-sm text-gray-600">聯絡人：\${data.contactName}（\${data.contactRelation || "?"}）</p>\` : ""}
-          \${data.contactPhone ? \`<p class="text-sm text-gray-600">電話：\${data.contactPhone}</p>\` : ""}
-        \`;
+        el.innerHTML = `
+          <h3 class="text-lg font-semibold text-teal-700">${data.name}</h3>
+          <p class="text-sm text-gray-600">往生日期：${data.deceasedDate || "未填寫"}</p>
+          ${data.contactName ? `<p class="text-sm text-gray-600">聯絡人：${data.contactName}（${data.contactRelation || "?"}）</p>` : ""}
+          ${data.contactPhone ? `<p class="text-sm text-gray-600">電話：${data.contactPhone}</p>` : ""}
+        `;
         if (interactive) {
           el.addEventListener("click", () => {
             currentDeceasedId = data.id;
@@ -394,30 +385,30 @@
         }
         const d = snap.data();
         detailsDeceasedName.textContent = d.name || "N/A";
-        detailsDeceasedDate.textContent = \`往生日期：\${d.deceasedDate || "N/A"}\`;
+        detailsDeceasedDate.textContent = `往生日期：${d.deceasedDate || "N/A"}`;
 
-        detailsApplicant.textContent = (d.applicantName || d.applicantRelation) ? \`申請人：\${d.applicantName || ""}（\${d.applicantRelation || "?"}）\` : "";
-        detailsContact.textContent = (d.contactName || d.contactRelation) ? \`聯絡人：\${d.contactName || ""}（\${d.contactRelation || "?"}）\` : "";
-        detailsContactPhone.textContent = d.contactPhone ? \`聯絡電話：\${d.contactPhone}\` : "";
-        detailsChantDateTime.textContent = (d.chantDate || d.chantTime) ? \`助念時間：\${(d.chantDate || "")} \${(d.chantTime || "")}\`.trim() : "";
-        detailsChantLocation.textContent = d.chantLocation ? \`助念地點：\${d.chantLocation}\` : "";
+        detailsApplicant.textContent = (d.applicantName || d.applicantRelation) ? `申請人：${d.applicantName || ""}（${d.applicantRelation || "?"}）` : "";
+        detailsContact.textContent = (d.contactName || d.contactRelation) ? `聯絡人：${d.contactName || ""}（${d.contactRelation || "?"}）` : "";
+        detailsContactPhone.textContent = d.contactPhone ? `聯絡電話：${d.contactPhone}` : "";
+        detailsChantDateTime.textContent = (d.chantDate || d.chantTime) ? `助念時間：${(d.chantDate || "")} ${(d.chantTime || "")}`.trim() : "";
+        detailsChantLocation.textContent = d.chantLocation ? `助念地點：${d.chantLocation}` : "";
 
-        detailsDeceasedReferrer.textContent = d.referrer ? \`介紹人：\${d.referrer}\` : "";
-        detailsDeceasedSource.textContent = d.source ? \`如何得知：\${d.source}\` : "";
-        detailsDeceasedSourceNotes.textContent = d.sourceNotes ? \`↳ 說明：\${d.sourceNotes}\` : "";
-        detailsRemarks.textContent = d.remarks ? \`備註：\${d.remarks}\` : "";
+        detailsDeceasedReferrer.textContent = d.referrer ? `介紹人：${d.referrer}` : "";
+        detailsDeceasedSource.textContent = d.source ? `如何得知：${d.source}` : "";
+        detailsDeceasedSourceNotes.textContent = d.sourceNotes ? `↳ 說明：${d.sourceNotes}` : "";
+        detailsRemarks.textContent = d.remarks ? `備註：${d.remarks}` : "";
 
         const notify = [];
         if (d.notifyHundred) notify.push("百日");
         if (d.notifyYear1) notify.push("對年");
         if (d.notifyYear3) notify.push("三年");
-        detailsNotify.textContent = notify.length ? \`通知項目：\${notify.join("、")}\` : "";
+        detailsNotify.textContent = notify.length ? `通知項目：${notify.join("、")}` : "";
 
         const attended = [];
         if (d.attendedHundred) attended.push("百日");
         if (d.attendedYear1) attended.push("對年");
         if (d.attendedYear3) attended.push("三年");
-        detailsAttended.textContent = attended.length ? \`已參與：\${attended.join("、")}\` : "";
+        detailsAttended.textContent = attended.length ? `已參與：${attended.join("、")}` : "";
 
         [detailsApplicant, detailsContact, detailsContactPhone, detailsChantDateTime, detailsChantLocation,
          detailsDeceasedReferrer, detailsDeceasedSource, detailsDeceasedSourceNotes, detailsRemarks, detailsNotify, detailsAttended
@@ -430,7 +421,8 @@
         loadAttendanceList(id);
       } catch (e) {
         console.error("[details] 讀取失敗：", e);
-        setStatusLight("讀取失敗", "err");
+        setChip("讀取失敗", "err");
+        setConnDot("err", "詳細資料讀取失敗");
         showCustomAlert("加載詳細資料失敗。");
       }
     }
@@ -608,10 +600,10 @@
         docs.forEach(row => {
           const li = document.createElement("li");
           li.className = "flex justify-between items-center p-2 border-b";
-          li.innerHTML = \`
-            <span><strong>\${row.type}</strong> - \${row.familyName || "（未填姓名）"} - \${row.date}</span>
-            <button class="text-red-500 hover:text-red-700 text-sm" data-id="\${row.id}">刪除</button>
-          \`;
+          li.innerHTML = `
+            <span><strong>${row.type}</strong> - ${row.familyName || "（未填姓名）"} - ${row.date}</span>
+            <button class="text-red-500 hover:text-red-700 text-sm" data-id="${row.id}">刪除</button>
+          `;
           li.querySelector("button").addEventListener("click", async () => {
             if (!currentUserId) return showCustomAlert("未登入狀態不可刪除。");
             if (await showCustomConfirm(\`您確定要刪除這筆「\${row.type}」紀錄嗎？\`)) {
@@ -645,7 +637,7 @@
         exportData.deceased.push(base);
       }
       const dateStr = new Date().toISOString().split("T")[0];
-      const fileName = \`doingSeven-backup-\${dateStr}.json\`;
+      const fileName = `doingSeven-backup-${dateStr}.json`;
       const dataStr = JSON.stringify(exportData, null, 2);
       const blob = new Blob([dataStr], { type: "application/json;charset=utf-8" });
       const a = document.createElement("a");
@@ -658,14 +650,19 @@
     }
 
     /**************************************************************
-     * 11) 連線測試（自動；不再顯示大字訊息，只更新燈號）
+     * 11) 自動「連線測試」：讀取一次（頁面載入即執行）
      **************************************************************/
     async function testConnectionOnce() {
       try {
         const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
-        if (snap) setStatusLight("已成功讀取 Firestore", "ok");
+        setConnDot("ok", "測試：成功讀取 Firestore");
+        if (!snap || snap.empty) {
+          // 雖然為空，也代表連線成功，只是沒有資料
+          setConnDot("ok", "已連線（目前資料為空）");
+        }
       } catch (e) {
-        setStatusLight(\`測試讀取失敗：\${e?.message || e}\`, "err");
+        setChip(`測試讀取失敗：${e?.message || e}`, "err");
+        setConnDot("err", "測試讀取失敗");
       }
     }
 
@@ -705,11 +702,14 @@
   <div class="container mx-auto max-w-4xl min-h-screen bg-gray-100">
 
     <!-- =======================
-         頁面 1: 往生菩薩列表
+         頁面 1: 往生菩薩列表（含常駐小綠燈）
     ========================= -->
     <main id="page-list" class="p-4">
       <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10">
-        <h1 class="text-2xl font-semibold text-center">往生菩薩</h1>
+        <h1 class="text-2xl font-semibold text-center">
+          <span id="conn-dot" class="conn-dot bg-amber-500 mr-2" title="啟動中…"></span>
+          往生菩薩
+        </h1>
       </header>
 
       <div id="loading-indicator" class="text-center p-8 hidden-page">
@@ -719,6 +719,17 @@
       <div id="deceased-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
         <!-- Cards 由 JS 動態插入 -->
       </div>
+
+      <!-- 右下角浮動新增按鈕（保留原有行為；如無此按鈕可忽略） -->
+      <button id="add-deceased-fab" class="fixed bottom-6 right-6 bg-teal-600 text-white w-12 h-12 rounded-full text-2xl leading-[3rem] shadow-lg hover:bg-teal-700">
+        +
+      </button>
+
+      <!-- 左下角「匯出」按鈕（若前版已有則保留） -->
+      <button id="export-button" class="fixed bottom-6 left-6 bg-slate-600 text-white px-4 py-2 rounded shadow-md hover:bg-slate-700">
+        匯出
+      </button>
+      <span id="export-loading-text" class="fixed bottom-6 left-28 text-xs text-gray-400 hidden-page">匯出中…</span>
     </main>
 
     <!-- =======================
@@ -986,49 +997,33 @@
           <textarea id="edit-deceased-remarks" rows="3" placeholder="任何需要補充的資訊..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
         </div>
 
-        <div class="flex items-center justify-between">
-          <button id="cancel-edit-button" type="button" class="px-4 py-2 rounded bg-gray-200 text-gray-700 hover:bg-gray-300">取消</button>
-          <button type="submit" class="px-4 py-2 rounded bg-teal-600 text-white hover:bg-teal-700">儲存修改</button>
-        </div>
-
-        <div class="text-right">
-          <button id="delete-deceased-button" type="button" class="text-red-600 hover:text-red-800 text-sm">刪除此檔案</button>
+        <div class="flex items-center gap-3 pt-2">
+          <button type="submit" class="bg-teal-600 text-white py-2 px-4 rounded-md font-semibold hover:bg-teal-700 transition duration-200">儲存修改</button>
+          <button type="button" id="cancel-edit-button" class="bg-gray-200 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-300">取消</button>
+          <button type="button" id="delete-deceased-button" class="ml-auto bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700">刪除檔案</button>
         </div>
       </form>
     </main>
 
-    <!-- 浮動工具：匯出（左下） & 新增（右下） -->
-    <div class="fixed left-4 bottom-4 z-20 flex items-center gap-3">
-      <button id="export-button" class="px-3 py-2 rounded bg-slate-700 text-white hover:bg-slate-800 text-sm">
-        匯出
-      </button>
-      <span id="export-loading-text" class="text-xs text-gray-400 hidden-page">匯出中…</span>
-    </div>
-    <button id="add-deceased-fab" class="fixed right-4 bottom-4 z-20 w-11 h-11 rounded-full bg-teal-600 text-white text-xl leading-[44px] hover:bg-teal-700">＋</button>
-
     <!-- 自訂 Alert -->
-    <div id="custom-alert" class="fixed inset-0 bg-black/40 flex items-center justify-center hidden-page z-30">
-      <div class="bg-white rounded-lg shadow-lg p-4 w-80">
-        <h3 class="font-semibold text-gray-800 mb-2">提示</h3>
-        <p id="custom-alert-message" class="text-gray-700 mb-4"></p>
-        <div class="text-right">
-          <button id="custom-alert-ok" class="px-3 py-2 rounded bg-teal-600 text-white hover:bg-teal-700">確定</button>
+    <div id="custom-alert" class="fixed inset-0 bg-black/40 flex items-center justify-center hidden-page">
+      <div class="bg-white rounded shadow p-4 w-[90%] max-w-md">
+        <div id="custom-alert-message" class="text-gray-800 whitespace-pre-wrap"></div>
+        <div class="text-right mt-4">
+          <button id="custom-alert-ok" class="px-4 py-2 bg-teal-600 text-white rounded">確定</button>
         </div>
       </div>
     </div>
-
     <!-- 自訂 Confirm -->
-    <div id="custom-confirm" class="fixed inset-0 bg-black/40 flex items-center justify-center hidden-page z-30">
-      <div class="bg-white rounded-lg shadow-lg p-4 w-80">
-        <h3 class="font-semibold text-gray-800 mb-2">請確認</h3>
-        <p id="custom-confirm-message" class="text-gray-700 mb-4"></p>
-        <div class="flex items-center justify-end gap-2">
-          <button id="custom-confirm-no" class="px-3 py-2 rounded bg-gray-200 text-gray-700 hover:bg-gray-300">取消</button>
-          <button id="custom-confirm-yes" class="px-3 py-2 rounded bg-teal-600 text-white hover:bg-teal-700">確定</button>
+    <div id="custom-confirm" class="fixed inset-0 bg-black/40 flex items-center justify-center hidden-page">
+      <div class="bg-white rounded shadow p-4 w-[90%] max-w-md">
+        <div id="custom-confirm-message" class="text-gray-800 whitespace-pre-wrap"></div>
+        <div class="text-right mt-4 space-x-2">
+          <button id="custom-confirm-no" class="px-4 py-2 bg-gray-200 text-gray-700 rounded">取消</button>
+          <button id="custom-confirm-yes" class="px-4 py-2 bg-teal-600 text-white rounded">確定</button>
         </div>
       </div>
     </div>
-
   </div>
 </body>
 </html>
