@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>做七登記（穩定合併版）</title>
+  <title>做七登記（最終連線版）</title>
 
   <!-- Tailwind CSS（CDN；正式可改為本地建置） -->
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     .hidden-page { display: none !important; }
-    .btn { @apply px-3 py-2 rounded font-medium; }
+    /* 避免使用 @apply 造成瀏覽器解析錯誤 */
   </style>
 
   <script type="module">
@@ -24,7 +24,7 @@
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     /**************************************************************
-     * 右上角「連線狀態小圓點」 + 全域錯誤攔截
+     * 右上角「連線狀態徽章」 + 全域錯誤攔截
      **************************************************************/
     const chip = document.createElement("div");
     chip.id = "status-chip";
@@ -85,9 +85,6 @@
     let deceasedUnsubscribe = null;
     let attendanceUnsubscribe = null;
 
-    // 僅於本機調試時容許只讀回退
-    const allowReadonlyOnLocalhost = ["localhost", "127.0.0.1"].includes(location.hostname);
-
     document.addEventListener("DOMContentLoaded", async () => {
       try {
         const app = initializeApp(firebaseConfig);
@@ -122,12 +119,9 @@
               setChip("已登入（匿名）", "ok");
             }
           } catch (err) {
-            console.error("[auth] 登入失敗：", err);
             setChip(`登入失敗：${err?.message || err}`, "err");
-            // 本機回退：嘗試載入只讀列表，避免誤判為「資料庫讀不到」
-            if (allowReadonlyOnLocalhost) {
-              loadDeceasedListReadOnly();
-            }
+            console.error("[auth] 登入失敗：", err);
+            // 若登入失敗，仍允許使用「測試連線」做只讀瀏覽（下方 testConnectionOnce 會處理）
           }
         }
       });
@@ -335,32 +329,6 @@
         loadingIndicator.classList.add("hidden-page");
         deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
       });
-    }
-
-    // 未登入的本機只讀回退：使用 getDocs 取一次快照
-    async function loadDeceasedListReadOnly() {
-      try {
-        loadingIndicator.classList.remove("hidden-page");
-        deceasedList.innerHTML = "";
-        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
-        loadingIndicator.classList.add("hidden-page");
-        if (snap.empty) {
-          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">（只讀）目前沒有任何資料。</p>';
-          return;
-        }
-        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => {
-            const da = a.deceasedDate ? new Date(a.deceasedDate) : new Date(0);
-            const dbb = b.deceasedDate ? new Date(b.deceasedDate) : new Date(0);
-            return dbb - da;
-          });
-        renderDeceasedCards(rows, /*interactive=*/false);
-        setChip("（只讀）成功讀取 Firestore", "warn");
-        readonlyBadge?.classList.remove("hidden-page");
-      } catch (e) {
-        console.error("[readonly] 讀取失敗：", e);
-        setChip("（只讀）讀取失敗", "err");
-      }
     }
 
     function renderDeceasedCards(docs, interactive) {
@@ -658,21 +626,21 @@
     }
 
     /**************************************************************
-     * 測試連線：讀取一次（不需登入；僅測試讀取權限）
+     * 測試連線：一定會在畫面上呈現結果（無須登入）
      **************************************************************/
     async function testConnectionOnce() {
       try {
         const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
         setChip(snap ? "✅ 測試：成功讀取 Firestore" : "⚠️ 測試：讀取結果為空", "ok");
-        if (!currentUserId && allowReadonlyOnLocalhost) {
-          // 若未登入且本機，順便以只讀列表方式呈現
-          const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-            .sort((a, b) => {
-              const da = a.deceasedDate ? new Date(a.deceasedDate) : new Date(0);
-              const dbb = b.deceasedDate ? new Date(b.deceasedDate) : new Date(0);
-              return dbb - da;
-            });
-          renderDeceasedCards(rows, /*interactive=*/false);
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => {
+            const da = a.deceasedDate ? new Date(a.deceasedDate) : new Date(0);
+            const dbb = b.deceasedDate ? new Date(b.deceasedDate) : new Date(0);
+            return dbb - da;
+          });
+        // 未登入時，改以只讀方式呈現；已登入則仍可互動
+        renderDeceasedCards(rows, /*interactive=*/!!currentUserId);
+        if (!currentUserId) {
           readonlyBadge?.classList.remove("hidden-page");
         }
       } catch (e) {
