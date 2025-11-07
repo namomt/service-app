@@ -276,6 +276,8 @@
     function setupEventListeners() {
       addDeceasedFab && addDeceasedFab.addEventListener("click", function () {
         addDeceasedForm.reset();
+        // [MOD] 需求 2: 預設時間為下午 2:00
+        deceasedChantTimeInput.value = "14:00"; 
         navigateTo("page-add-deceased");
       });
       exportButton && exportButton.addEventListener("click", async function () {
@@ -301,6 +303,25 @@
       deleteDeceasedButton && deleteDeceasedButton.addEventListener("click", handleDeleteDeceased);
       backButtonAdd && backButtonAdd.addEventListener("click", function () { navigateTo("page-list"); });
       backButtonDetails && backButtonDetails.addEventListener("click", function () { navigateTo("page-list"); });
+
+      // [NEW] 需求 3: 助念日期預設與往生日期同一天
+      // (適用於「新增」表單)
+      deceasedDateInput && deceasedDateInput.addEventListener("change", function () {
+        // 只有在「助念日期」為空時才自動填入
+        if (!deceasedChantDateInput.value) {
+          deceasedChantDateInput.value = deceasedDateInput.value;
+        }
+      });
+
+      // (適用於「修改」表單)
+      editDeceasedDateInput && editDeceasedDateInput.addEventListener("change", function () {
+        // 只有在「助念日期」為空時才自動填入
+        if (!editDeceasedChantDateInput.value) {
+          editDeceasedChantDateInput.value = editDeceasedDateInput.value;
+        }
+      });
+      // [NEW END]
+
       // 移除了 testConnBtn 的事件監聽
     }
 
@@ -800,9 +821,36 @@
             <label for="deceased-chant-date" class="block text-sm font-medium text-gray-700">助念日期 (選填)</label>
             <input type="date" id="deceased-chant-date" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
           </div>
+          <!-- [MOD] 需求 1 & 2: 改為 Select，每 30 分鐘為單位，預設 14:00 -->
           <div>
             <label for="deceased-chant-time" class="block text-sm font-medium text-gray-700">助念時間 (選填)</label>
-            <input type="time" id="deceased-chant-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+            <select id="deceased-chant-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 bg-white">
+              <option value="">-- 請選擇時間 --</option>
+              <option value="00:00">00:00</option><option value="00:30">00:30</option>
+              <option value="01:00">01:00</option><option value="01:30">01:30</option>
+              <option value="02:00">02:00</option><option value="02:30">02:30</option>
+              <option value="03:00">03:00</option><option value="03:30">03:30</option>
+              <option value="04:00">04:00</option><option value="04:30">04:30</option>
+              <option value="05:00">05:00</option><option value="05:30">05:30</option>
+              <option value="06:00">06:00</option><option value="06:30">06:30</option>
+              <option value="07:00">07:00</option><option value="07:30">07:30</option>
+              <option value="08:00">08:00</option><option value="08:30">08:30</option>
+              <option value="09:00">09:00</option><option value="09:30">09:30</option>
+              <option value="10:00">10:00</option><option value="10:30">10:30</option>
+              <option value="11:00">11:00</option><option value="11:30">11:30</option>
+              <option value="12:00">12:00</option><option value="12:30">12:30</option>
+              <option value="13:00">13:00</option><option value="13:30">13:30</option>
+              <option value="14:00" selected>14:00</option><option value="14:30">14:30</option>
+              <option value="15:00">15:00</option><option value="15:30">15:30</option>
+              <option value="16:00">16:00</option><option value="16:30">16:30</option>
+              <option value="17:00">17:00</option><option value="17:30">17:30</option>
+              <option value="18:00">18:00</option><option value="18:30">18:30</option>
+              <option value="19:00">19:00</option><option value="19:30">19:30</option>
+              <option value="20:00">20:00</option><option value="20:30">20:30</option>
+              <option value="21:00">21:00</option><option value="21:30">21:30</option>
+              <option value="22:00">22:00</option><option value="22:30">22:30</option>
+              <option value="23:00">23:00</option><option value="23:30">23:30</option>
+            </select>
           </div>
         </div>
         <div>
@@ -961,9 +1009,36 @@
             <label for="edit-deceased-chant-date" class="block text-sm font-medium text-gray-700">助念日期 (選填)</label>
             <input type="date" id="edit-deceased-chant-date" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
           </div>
+          <!-- [MOD] 需求 1: 改為 Select，每 30 分鐘為單位 -->
           <div>
             <label for="edit-deceased-chant-time" class="block text-sm font-medium text-gray-700">助念時間 (選填)</label>
-            <input type="time" id="edit-deceased-chant-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500">
+            <select id="edit-deceased-chant-time" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500 bg-white">
+              <option value="">-- 請選擇時間 --</option>
+              <option value="00:00">00:00</option><option value="00:30">00:30</option>
+              <option value="01:00">01:00</option><option value="01:30">01:30</option>
+              <option value="02:00">02:00</option><option value="02:30">02:30</option>
+              <option value="03:00">03:00</option><option value="03:30">03:30</option>
+              <option value="04:00">04:00</option><option value="04:30">04:30</option>
+              <option value="05:00">05:00</option><option value="05:30">05:30</option>
+              <option value="06:00">06:00</option><option value="06:30">06:30</option>
+              <option value="07:00">07:00</option><option value="07:30">07:30</option>
+              <option value="08:00">08:00</option><option value="08:30">08:30</option>
+              <option value="09:00">09:00</option><option value="09:30">09:30</option>
+              <option value="10:00">10:00</option><option value="10:30">10:30</option>
+              <option value="11:00">11:00</option><option value="11:30">11:30</option>
+              <option value="12:00">12:00</option><option value="12:30">12:30</option>
+              <option value="13:00">13:00</option><option value="13:30">13:30</option>
+              <option value="14:00">14:00</option><option value="14:30">14:30</option>
+              <option value="15:00">15:00</option><option value="15:30">15:30</option>
+              <option value="16:00">16:00</option><option value="16:30">16:30</option>
+              <option value="17:00">17:00</option><option value="17:30">17:30</option>
+              <option value="18:00">18:00</option><option value="18:30">18:30</option>
+              <option value="19:00">19:00</option><option value="19:30">19:30</option>
+              <option value="20:00">20:00</option><option value="20:30">20:30</option>
+              <option value="21:00">21:00</option><option value="21:30">21:30</option>
+              <option value="22:00">22:00</option><option value="22:30">22:30</option>
+              <option value="23:00">23:00</option><option value="23:30">23:30</option>
+            </select>
           </div>
         </div>
         <div>
@@ -1014,8 +1089,8 @@
           <textarea id="edit-deceased-source-notes" rows="3" placeholder="例如：介紹人姓名、或[其他]的具體內容..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
         </div>
         <div>
-          <label for="deceased-remarks" class="block text-sm font-medium text-gray-700">備註 (選填)</label>
-          <textarea id="deceased-remarks" rows="3" placeholder="任何需要補充的資訊..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
+          <label for="edit-deceased-remarks" class="block text-sm font-medium text-gray-700">備註 (選填)</label>
+          <textarea id="edit-deceased-remarks" rows="3" placeholder="任何需要補充的資訊..." class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-teal-500 focus:border-teal-500"></textarea>
         </div>
 
         <div class="flex gap-4">
