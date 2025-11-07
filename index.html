@@ -3,22 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>做七登記（連線穩定版）</title>
+  <title>做七登記</title>
 
   <!-- Tailwind CSS（CDN；正式可改為本地建置） -->
   <script src="https://cdn.tailwindcss.com"></script>
-
   <style>
     .hidden-page { display: none !important; }
-    .status-ok { background: #0ea5e9; }       /* sky-500 */
-    .status-warn { background: #f59e0b; }     /* amber-500 */
-    .status-err { background: #ef4444; }      /* red-500 */
   </style>
 
   <script type="module">
-    /*****************************************************************
-     *  1) 匯入 Firebase SDK
-     *****************************************************************/
+    /**************************************************************
+     * 1) 匯入 Firebase SDK
+     **************************************************************/
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import {
@@ -26,40 +22,44 @@
       onSnapshot, collection, query, getDocs, setLogLevel
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    /*****************************************************************
-     *  2) UI：狀態列（不看 Console 也能知道進度）
-     *****************************************************************/
-    const statusEl = document.createElement("div");
-    statusEl.id = "status-bar";
-    statusEl.className = "w-full text-white text-sm px-3 py-2 status-warn";
-    statusEl.textContent = "系統啟動中…";
-    document.addEventListener("DOMContentLoaded", function () {
-      document.body.prepend(statusEl);
+    /**************************************************************
+     * 2) 右上角「連線狀態徽章」 + 全域錯誤攔截
+     **************************************************************/
+    const chip = document.createElement("div");
+    chip.id = "status-chip";
+    chip.className = "fixed top-3 right-3 text-xs px-3 py-1 rounded-full text-white bg-gray-500 shadow cursor-default";
+    chip.textContent = "啟動中…";
+    document.addEventListener("DOMContentLoaded", () => {
+      document.body.appendChild(chip);
     });
-    function setStatus(msg, level) {
-      var lv = level || "ok";
-      statusEl.textContent = msg;
-      statusEl.classList.remove("status-ok", "status-warn", "status-err");
-      statusEl.classList.add(lv === "ok" ? "status-ok" : lv === "warn" ? "status-warn" : "status-err");
-      console.log("[status] " + msg);
+    function setChip(text, level = "info") {
+      chip.textContent = text;
+      chip.classList.remove("bg-gray-500","bg-sky-500","bg-green-600","bg-amber-500","bg-red-600");
+      chip.classList.add(level === "ok" ? "bg-green-600"
+        : level === "warn" ? "bg-amber-500"
+        : level === "info" ? "bg-sky-500"
+        : "bg-red-600");
+      console.log(`[status] ${text}`);
     }
-    window.addEventListener("error", function (e) {
-      setStatus("⚠️ 未捕捉錯誤：" + e.message, "err");
+    window.addEventListener("error", (e) => {
+      setChip(`錯誤：${e.message}`, "err");
       console.error(e);
     });
-    window.addEventListener("unhandledrejection", function (e) {
-      setStatus("⚠️ 未處理的 Promise 拒絕：" + e.reason, "err");
+    window.addEventListener("unhandledrejection", (e) => {
+      setChip(`錯誤：${e.reason}`, "err");
       console.error(e);
     });
+    window.addEventListener("online", () => setChip("網路已連線", "info"));
+    window.addEventListener("offline", () => setChip("網路離線", "warn"));
 
-    /*****************************************************************
-     *  3) Firebase 設定：雙重邏輯（Canvas → __firebase_config；否則固定 servicelogs-8577c）
-     *****************************************************************/
+    /**************************************************************
+     * 3) Firebase 設定：Canvas 優先，否則 fallback 固定專案
+     **************************************************************/
     let firebaseConfig = null;
     try {
       if (typeof __firebase_config !== "undefined" && __firebase_config) {
         firebaseConfig = JSON.parse(__firebase_config);
-        console.log("[config] 使用 Canvas 注入的 __firebase_config。");
+        console.log("[config] 來自 __firebase_config。");
       }
     } catch (err) {
       console.error("[config] 解析 __firebase_config 失敗：", err);
@@ -73,83 +73,93 @@
         messagingSenderId: "772814177521",
         appId: "1:772814177521:web:448ed90ebfbd2baf769550"
       };
-      console.log("[config] 使用 fallback 固定設定（servicelogs-8577c）。");
+      console.log("[config] 使用 fallback 固定設定。");
     }
-    const appId = firebaseConfig && firebaseConfig.projectId ? firebaseConfig.projectId : "servicelogs-8577c";
+    const appId = firebaseConfig?.projectId || "servicelogs-8577c";
 
-    /*****************************************************************
-     *  4) 初始化 Firebase + Auth
-     *****************************************************************/
+    /**************************************************************
+     * 4) 初始化 Firebase + Auth
+     **************************************************************/
     let db, auth;
     let currentUserId = null;
     let currentDeceasedId = null;
     let deceasedUnsubscribe = null;
     let attendanceUnsubscribe = null;
 
-    const allowReadonlyOnLocalhost = ["localhost", "127.0.0.1"].includes(location.hostname);
+    // 連線自動偵測（每 60 秒 ping 一次）
+    let connTimer = null;
+    async function connectivityPing() {
+      try {
+        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
+        const ts = new Date();
+        const hh = String(ts.getHours()).padStart(2,"0");
+        const mm = String(ts.getMinutes()).padStart(2,"0");
+        setChip(`連線正常 • ${hh}:${mm}`, "ok");
+      } catch (e) {
+        setChip(`連線測試失敗：${e?.message || e}`, "err");
+      }
+    }
 
-    document.addEventListener("DOMContentLoaded", async function () {
+    document.addEventListener("DOMContentLoaded", async () => {
       try {
         const app = initializeApp(firebaseConfig);
         auth = getAuth(app);
         db = getFirestore(app);
         setLogLevel("debug");
-        console.log("[init] Firebase 初始化完成。");
-        setStatus("✅ Firebase 初始化完成", "ok");
+        setChip("初始化完成", "info");
       } catch (e) {
-        console.error("[init] Firebase 初始化失敗：", e);
-        setStatus("❌ Firebase 初始化失敗，請檢查設定/網路", "err");
+        setChip("初始化失敗", "err");
+        console.error("[init] 失敗：", e);
         return;
       }
       setupDomRefs();
       setupEventListeners();
+      updateTodayInfo();
       setupAuthListener();
     });
 
     async function setupAuthListener() {
-      onAuthStateChanged(auth, async function (user) {
+      onAuthStateChanged(auth, async (user) => {
         if (user) {
           currentUserId = user.uid;
-          console.log("[auth] 已登入：" + currentUserId);
-          setStatus("✅ 已登入（匿名）", "ok");
+          setChip("已登入（匿名）", "ok");
           await loadDeceasedList();
+          // 啟動自動連線偵測（每 60 秒）
+          if (!connTimer) {
+            connectivityPing(); // 先測一次
+            connTimer = setInterval(connectivityPing, 60000);
+          }
         } else {
-          console.log("[auth] 未登入，準備登入…");
-          setStatus("登入中…", "warn");
+          setChip("登入中…", "warn");
           try {
             if (typeof __initial_auth_token !== "undefined" && __initial_auth_token) {
-              console.log("[auth] 使用自訂 token 登入（Canvas 預覽）。");
               await signInWithCustomToken(auth, __initial_auth_token);
-              setStatus("✅ 以自訂 Token 登入成功", "ok");
+              setChip("已登入（自訂 Token）", "ok");
             } else {
               await signInAnonymously(auth);
-              setStatus("✅ 匿名登入成功", "ok");
+              setChip("已登入（匿名）", "ok");
             }
           } catch (err) {
+            setChip(`登入失敗：${err?.message || err}`, "err");
             console.error("[auth] 登入失敗：", err);
-            setStatus("❌ 登入失敗：" + (err && err.message ? err.message : err), "err");
-            // 若本機測試且登入失敗，允許只讀測試
-            if (allowReadonlyOnLocalhost) {
-              setStatus("⚠️ 匿名登入遭阻擋，本機改為只讀測試。", "warn");
-            }
           }
         }
       });
     }
 
-    /*****************************************************************
-     *  5) Firestore：共用路徑
-     *****************************************************************/
+    /**************************************************************
+     * 5) Firestore 路徑（固定以 projectId 建構）
+     **************************************************************/
     function getDeceasedCollectionPath() {
-      return "artifacts/" + appId + "/public/data/deceased";
+      return `artifacts/${appId}/public/data/deceased`;
     }
     function getAttendanceCollectionPath(deceasedId) {
-      return "artifacts/" + appId + "/public/data/deceased/" + deceasedId + "/attendance";
+      return `artifacts/${appId}/public/data/deceased/${deceasedId}/attendance`;
     }
 
-    /*****************************************************************
-     *  6) DOM 元素 & 導航
-     *****************************************************************/
+    /**************************************************************
+     * 6) DOM 參照
+     **************************************************************/
     let pageList, pageAddDeceased, pageDetails, pageEditDeceased;
     let deceasedList, loadingIndicator, addDeceasedFab, exportButton, exportLoadingIndicator;
     let addDeceasedForm;
@@ -174,21 +184,20 @@
     let editDeceasedAttendedHundredInput, editDeceasedAttendedYear1Input, editDeceasedAttendedYear3Input;
     let cancelEditButton, deleteDeceasedButton;
     let backButtonAdd, backButtonDetails;
-    let testConnBtn, readonlyBadge;
+    let todayInfo;
 
     function setupDomRefs() {
-      // 頁面
       pageList = document.getElementById("page-list");
       pageAddDeceased = document.getElementById("page-add-deceased");
       pageDetails = document.getElementById("page-details");
       pageEditDeceased = document.getElementById("page-edit-deceased");
-      // 主頁
+
       deceasedList = document.getElementById("deceased-list");
       loadingIndicator = document.getElementById("loading-indicator");
       addDeceasedFab = document.getElementById("add-deceased-fab");
       exportButton = document.getElementById("export-button");
       exportLoadingIndicator = document.getElementById("export-loading-text");
-      // 新增頁欄位
+
       addDeceasedForm = document.getElementById("add-deceased-form");
       deceasedNameInput = document.getElementById("deceased-name");
       deceasedDateInput = document.getElementById("deceased-date");
@@ -204,14 +213,14 @@
       deceasedChantTimeInput = document.getElementById("deceased-chant-time");
       deceasedChantLocationInput = document.getElementById("deceased-chant-location");
       deceasedRemarksInput = document.getElementById("deceased-remarks");
-      // 後續關懷
+
       deceasedNotifyHundredInput = document.getElementById("deceased-notify-hundred");
       deceasedNotifyYear1Input = document.getElementById("deceased-notify-year1");
       deceasedNotifyYear3Input = document.getElementById("deceased-notify-year3");
       deceasedAttendedHundredInput = document.getElementById("deceased-attended-hundred");
       deceasedAttendedYear1Input = document.getElementById("deceased-attended-year1");
       deceasedAttendedYear3Input = document.getElementById("deceased-attended-year3");
-      // 詳細頁
+
       detailsDeceasedName = document.getElementById("details-deceased-name");
       detailsDeceasedDate = document.getElementById("details-deceased-date");
       detailsDeceasedReferrer = document.getElementById("details-deceased-referrer");
@@ -226,13 +235,13 @@
       detailsNotify = document.getElementById("details-notify");
       detailsAttended = document.getElementById("details-attended");
       editDeceasedButton = document.getElementById("edit-deceased-button");
-      // 做七登記
+
       addAttendanceForm = document.getElementById("add-attendance-form");
       attendanceFamilyNameInput = document.getElementById("attendance-family-name");
       attendanceTypeSelect = document.getElementById("attendance-type");
       attendanceDateInput = document.getElementById("attendance-date");
       attendanceList = document.getElementById("attendance-list");
-      // 修改頁
+
       editDeceasedForm = document.getElementById("edit-deceased-form");
       editDeceasedNameInput = document.getElementById("edit-deceased-name");
       editDeceasedDateInput = document.getElementById("edit-deceased-date");
@@ -256,28 +265,29 @@
       editDeceasedAttendedYear3Input = document.getElementById("edit-deceased-attended-year3");
       cancelEditButton = document.getElementById("cancel-edit-button");
       deleteDeceasedButton = document.getElementById("delete-deceased-button");
-      // 返回按鈕
+
       backButtonAdd = document.getElementById("back-button-add");
       backButtonDetails = document.getElementById("back-button-details");
-      // 連線測試與只讀徽章
-      testConnBtn = document.getElementById("test-conn-btn");
-      readonlyBadge = document.getElementById("readonly-badge");
+
+      todayInfo = document.getElementById("today-info");
     }
 
+    /**************************************************************
+     * 7) 事件綁定（恢復正常功能；保留返回按鈕修復）
+     **************************************************************/
     function navigateTo(pageId) {
-      [pageList, pageAddDeceased, pageDetails, pageEditDeceased].forEach(function (page) {
+      [pageList, pageAddDeceased, pageDetails, pageEditDeceased].forEach(page => {
         if (!page) return;
         if (page.id === pageId) page.classList.remove("hidden-page");
         else page.classList.add("hidden-page");
       });
     }
-
     function setupEventListeners() {
-      addDeceasedFab && addDeceasedFab.addEventListener("click", function () {
+      addDeceasedFab?.addEventListener("click", () => {
         addDeceasedForm.reset();
         navigateTo("page-add-deceased");
       });
-      exportButton && exportButton.addEventListener("click", async function () {
+      exportButton?.addEventListener("click", async () => {
         if (!currentUserId) return showCustomAlert("請先登入");
         if (await showCustomConfirm("您確定要匯出所有資料嗎？這可能會花費一些時間。")) {
           exportLoadingIndicator.classList.remove("hidden-page");
@@ -292,20 +302,19 @@
           }
         }
       });
-      addDeceasedForm && addDeceasedForm.addEventListener("submit", handleAddDeceased);
-      editDeceasedButton && editDeceasedButton.addEventListener("click", loadEditForm);
-      addAttendanceForm && addAttendanceForm.addEventListener("submit", handleAddAttendance);
-      editDeceasedForm && editDeceasedForm.addEventListener("submit", handleEditDeceased);
-      cancelEditButton && cancelEditButton.addEventListener("click", function () { navigateTo("page-details"); });
-      deleteDeceasedButton && deleteDeceasedButton.addEventListener("click", handleDeleteDeceased);
-      backButtonAdd && backButtonAdd.addEventListener("click", function () { navigateTo("page-list"); });
-      backButtonDetails && backButtonDetails.addEventListener("click", function () { navigateTo("page-list"); });
-      testConnBtn && testConnBtn.addEventListener("click", testConnectionOnce);
+      addDeceasedForm?.addEventListener("submit", handleAddDeceased);
+      editDeceasedButton?.addEventListener("click", loadEditForm);
+      addAttendanceForm?.addEventListener("submit", handleAddAttendance);
+      editDeceasedForm?.addEventListener("submit", handleEditDeceased);
+      cancelEditButton?.addEventListener("click", () => navigateTo("page-details"));
+      deleteDeceasedButton?.addEventListener("click", handleDeleteDeceased);
+      backButtonAdd?.addEventListener("click", () => navigateTo("page-list"));
+      backButtonDetails?.addEventListener("click", () => navigateTo("page-list"));
     }
 
-    /*****************************************************************
-     *  7) 主列表（以「往生日期」由新到舊排序）
-     *****************************************************************/
+    /**************************************************************
+     * 8) 主列表（依「往生日期」由新到舊排序）
+     **************************************************************/
     let firstListSnap = true;
     async function loadDeceasedList() {
       if (!currentUserId) return;
@@ -314,77 +323,47 @@
       if (deceasedUnsubscribe) deceasedUnsubscribe();
 
       const qy = query(collection(db, getDeceasedCollectionPath()));
-      deceasedUnsubscribe = onSnapshot(qy, function (snap) {
+      deceasedUnsubscribe = onSnapshot(qy, (snap) => {
         loadingIndicator.classList.add("hidden-page");
         if (firstListSnap) {
-          setStatus("✅ 已連線到 Firestore（收到列表更新）", "ok");
+          const ts = new Date();
+          const hh = String(ts.getHours()).padStart(2,"0");
+          const mm = String(ts.getMinutes()).padStart(2,"0");
+          setChip(`連線正常 • ${hh}:${mm}`, "ok");
           firstListSnap = false;
         }
         if (snap.empty) {
-          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右下角按鈕新增。</p>';
+          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右上角 + 來新增。</p>';
           return;
         }
-        const docs = snap.docs.map(function (d) { return { id: d.id, data: d.data() }; });
-        docs.sort(function (a, b) {
-          const da = a.data.deceasedDate ? new Date(a.data.deceasedDate) : new Date(0);
-          const dbb = b.data.deceasedDate ? new Date(b.data.deceasedDate) : new Date(0);
-          return dbb - da;
-        });
-        renderDeceasedCards(docs, true);
-      }, function (err) {
-        console.error("[list] 讀取失敗：", err);
-        setStatus("❌ 列表讀取失敗：" + (err && err.message ? err.message : err), "err");
-        loadingIndicator.classList.add("hidden-page");
-        deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
-      });
-    }
-
-    // 只讀回退：使用 getDocs 取一次快照並渲染（不需要登入）
-    async function loadDeceasedListReadOnly() {
-      try {
-        loadingIndicator.classList.remove("hidden-page");
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => {
+            const da = a.deceasedDate ? new Date(a.deceasedDate) : new Date(0);
+            const dbb = b.deceasedDate ? new Date(b.deceasedDate) : new Date(0);
+            return dbb - da;
+          });
         deceasedList.innerHTML = "";
-        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
-        loadingIndicator.classList.add("hidden-page");
-        if (snap.empty) {
-          deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">（只讀）目前沒有任何資料。</p>';
-          return;
-        }
-        const rows = snap.docs.map(function (d) { return { id: d.id, data: d.data() }; });
-        rows.sort(function (a, b) {
-          const da = a.data.deceasedDate ? new Date(a.data.deceasedDate) : new Date(0);
-          const dbb = b.data.deceasedDate ? new Date(b.data.deceasedDate) : new Date(0);
-          return dbb - da;
-        });
-        renderDeceasedCards(rows, false);
-        setStatus("（只讀）成功讀取 Firestore", "warn");
-        readonlyBadge && readonlyBadge.classList.remove("hidden-page");
-      } catch (e) {
-        console.error("[readonly] 讀取失敗：", e);
-        setStatus("（只讀）讀取失敗", "err");
-      }
-    }
-
-    function renderDeceasedCards(docs, interactive) {
-      deceasedList.innerHTML = "";
-      docs.forEach(function (row) {
-        const d = row.data;
-        const el = document.createElement("div");
-        el.className = "bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow" + (interactive ? " cursor-pointer" : " opacity-90");
-        let html = "";
-        html += '<h3 class="text-lg font-semibold text-teal-700">' + (d.name || "") + '</h3>';
-        html += '<p class="text-sm text-gray-600">往生日期：' + (d.deceasedDate || "未填寫") + "</p>";
-        if (d.contactName) html += '<p class="text-sm text-gray-600">聯絡人：' + d.contactName + "（" + (d.contactRelation || "?") + "）</p>";
-        if (d.contactPhone) html += '<p class="text-sm text-gray-600">電話：' + d.contactPhone + "</p>";
-        el.innerHTML = html;
-        if (interactive) {
-          el.addEventListener("click", function () {
-            currentDeceasedId = row.id;
+        docs.forEach(data => {
+          const el = document.createElement("div");
+          el.className = "bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition-shadow cursor-pointer";
+          el.innerHTML = `
+            <h3 class="text-lg font-semibold text-teal-700">${data.name}</h3>
+            <p class="text-sm text-gray-600">往生日期：${data.deceasedDate || "未填寫"}</p>
+            ${data.contactName ? `<p class="text-sm text-gray-600">聯絡人：${data.contactName}（${data.contactRelation || "?"}）</p>` : ""}
+            ${data.contactPhone ? `<p class="text-sm text-gray-600">電話：${data.contactPhone}</p>` : ""}
+          `;
+          el.addEventListener("click", () => {
+            currentDeceasedId = data.id;
             loadDeceasedDetails(currentDeceasedId);
             navigateTo("page-details");
           });
-        }
-        deceasedList.appendChild(el);
+          deceasedList.appendChild(el);
+        });
+      }, (err) => {
+        console.error("[list] 讀取失敗：", err);
+        setChip("讀取失敗", "err");
+        loadingIndicator.classList.add("hidden-page");
+        deceasedList.innerHTML = '<p class="text-red-500 text-center col-span-1 md:col-span-2 lg:col-span-3">資料加載失敗，請檢查網路連線。</p>';
       });
     }
 
@@ -397,32 +376,34 @@
         }
         const d = snap.data();
         detailsDeceasedName.textContent = d.name || "N/A";
-        detailsDeceasedDate.textContent = "往生日期：" + (d.deceasedDate || "N/A");
-        detailsApplicant.textContent = (d.applicantName || d.applicantRelation) ? "申請人：" + (d.applicantName || "") + "（" + (d.applicantRelation || "?") + "）" : "";
-        detailsContact.textContent = (d.contactName || d.contactRelation) ? "聯絡人：" + (d.contactName || "") + "（" + (d.contactRelation || "?") + "）" : "";
-        detailsContactPhone.textContent = d.contactPhone ? "聯絡電話：" + d.contactPhone : "";
-        detailsChantDateTime.textContent = (d.chantDate || d.chantTime) ? "助念時間：" + (d.chantDate || "") + " " + (d.chantTime || "") : "";
-        detailsChantLocation.textContent = d.chantLocation ? "助念地點：" + d.chantLocation : "";
-        detailsDeceasedReferrer.textContent = d.referrer ? "介紹人：" + d.referrer : "";
-        detailsDeceasedSource.textContent = d.source ? "如何得知：" + d.source : "";
-        detailsDeceasedSourceNotes.textContent = d.sourceNotes ? "↳ 說明：" + d.sourceNotes : "";
-        detailsRemarks.textContent = d.remarks ? d.remarks : "";
+        detailsDeceasedDate.textContent = `往生日期：${d.deceasedDate || "N/A"}`;
+
+        detailsApplicant.textContent = (d.applicantName || d.applicantRelation) ? `申請人：${d.applicantName || ""}（${d.applicantRelation || "?"}）` : "";
+        detailsContact.textContent = (d.contactName || d.contactRelation) ? `聯絡人：${d.contactName || ""}（${d.contactRelation || "?"}）` : "";
+        detailsContactPhone.textContent = d.contactPhone ? `聯絡電話：${d.contactPhone}` : "";
+        detailsChantDateTime.textContent = (d.chantDate || d.chantTime) ? `助念時間：${(d.chantDate || "")} ${(d.chantTime || "")}`.trim() : "";
+        detailsChantLocation.textContent = d.chantLocation ? `助念地點：${d.chantLocation}` : "";
+
+        detailsDeceasedReferrer.textContent = d.referrer ? `介紹人：${d.referrer}` : "";
+        detailsDeceasedSource.textContent = d.source ? `如何得知：${d.source}` : "";
+        detailsDeceasedSourceNotes.textContent = d.sourceNotes ? `↳ 說明：${d.sourceNotes}` : "";
+        detailsRemarks.textContent = d.remarks ? `備註：${d.remarks}` : "";
 
         const notify = [];
         if (d.notifyHundred) notify.push("百日");
         if (d.notifyYear1) notify.push("對年");
         if (d.notifyYear3) notify.push("三年");
-        detailsNotify.textContent = notify.length ? "通知項目：" + notify.join("、") : "";
+        detailsNotify.textContent = notify.length ? `通知項目：${notify.join("、")}` : "";
 
         const attended = [];
         if (d.attendedHundred) attended.push("百日");
         if (d.attendedYear1) attended.push("對年");
         if (d.attendedYear3) attended.push("三年");
-        detailsAttended.textContent = attended.length ? "已參與：" + attended.join("、") : "";
+        detailsAttended.textContent = attended.length ? `已參與：${attended.join("、")}` : "";
 
         [detailsApplicant, detailsContact, detailsContactPhone, detailsChantDateTime, detailsChantLocation,
          detailsDeceasedReferrer, detailsDeceasedSource, detailsDeceasedSourceNotes, detailsRemarks, detailsNotify, detailsAttended
-        ].forEach(function (el) {
+        ].forEach(el => {
           if (!el) return;
           if (!el.textContent || el.textContent.trim() === "") el.classList.add("hidden-page");
           else el.classList.remove("hidden-page");
@@ -431,7 +412,7 @@
         loadAttendanceList(id);
       } catch (e) {
         console.error("[details] 讀取失敗：", e);
-        setStatus("❌ 詳細資料讀取失敗：" + (e && e.message ? e.message : e), "err");
+        setChip("讀取失敗", "err");
         showCustomAlert("加載詳細資料失敗。");
       }
     }
@@ -472,9 +453,9 @@
       }
     }
 
-    /*****************************************************************
-     *  8) CRUD：新增/修改/刪除（含做七登記）
-     *****************************************************************/
+    /**************************************************************
+     * 9) CRUD：新增/修改/刪除（含做七登記）
+     **************************************************************/
     async function handleAddDeceased(e) {
       e.preventDefault();
       if (!currentUserId || !deceasedNameInput.value || !deceasedDateInput.value) {
@@ -553,13 +534,13 @@
 
     async function handleDeleteDeceased() {
       if (!currentDeceasedId || !currentUserId) return;
-      const ok = await showCustomConfirm("您確定要永久刪除此筆檔案嗎？\n\n所有相關的「做七紀錄」將會一併刪除。此操作無法復原。");
+      const ok = await showCustomConfirm("您確定要永久刪除此筆檔案嗎？\\n\\n所有相關的「做七紀錄」將會一併刪除。此操作無法復原。");
       if (!ok) return;
       try {
         const did = currentDeceasedId;
         const attSnap = await getDocs(collection(db, getAttendanceCollectionPath(did)));
         const jobs = [];
-        attSnap.forEach(function (d) { jobs.push(deleteDoc(d.ref)); });
+        attSnap.forEach(d => jobs.push(deleteDoc(d.ref)));
         await Promise.all(jobs);
         await deleteDoc(doc(db, getDeceasedCollectionPath(), did));
         currentDeceasedId = null;
@@ -574,17 +555,11 @@
     async function handleAddAttendance(e) {
       e.preventDefault();
       if (!currentDeceasedId) return;
-      if (!currentUserId) return showCustomAlert("未登入狀態不可登記。");
       const name = (attendanceFamilyNameInput.value || "").trim();
       if (!name || !attendanceTypeSelect.value || !attendanceDateInput.value) {
         return showCustomAlert("請填寫出席者姓名、七旬類別與日期。");
       }
-      const payload = {
-        familyName: name,
-        type: attendanceTypeSelect.value,
-        date: attendanceDateInput.value,
-        createdAt: new Date().toISOString()
-      };
+      const payload = { familyName: name, type: attendanceTypeSelect.value, date: attendanceDateInput.value, createdAt: new Date().toISOString() };
       try {
         await addDoc(collection(db, getAttendanceCollectionPath(currentDeceasedId)), payload);
         addAttendanceForm.reset();
@@ -598,28 +573,27 @@
     function loadAttendanceList(deceasedId) {
       if (attendanceUnsubscribe) attendanceUnsubscribe();
       const qy = query(collection(db, getAttendanceCollectionPath(deceasedId)));
-      attendanceUnsubscribe = onSnapshot(qy, function (snap) {
+      attendanceUnsubscribe = onSnapshot(qy, (snap) => {
         attendanceList.innerHTML = "";
         if (snap.empty) {
           attendanceList.innerHTML = '<p class="text-gray-500">尚無做七登記紀錄。</p>';
           return;
         }
-        const docs = snap.docs.map(function (d) { return { id: d.id, data: d.data() }; });
-        docs.sort(function (a, b) {
-          const da = a.data.date ? new Date(a.data.date) : new Date(0);
-          const dbb = b.data.date ? new Date(b.data.date) : new Date(0);
-          return dbb - da;
-        });
-        docs.forEach(function (row) {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => {
+            const da = a.date ? new Date(a.date) : new Date(0);
+            const dbb = b.date ? new Date(b.date) : new Date(0);
+            return dbb - da;
+          });
+        docs.forEach(row => {
           const li = document.createElement("li");
           li.className = "flex justify-between items-center p-2 border-b";
-          let html = "";
-          html += "<span><strong>" + (row.data.type || "") + "</strong> - " + (row.data.familyName || "（未填姓名）") + " - " + (row.data.date || "") + "</span>";
-          html += '<button class="text-red-500 hover:text-red-700 text-sm" data-id="' + row.id + '">刪除</button>';
-          li.innerHTML = html;
-          li.querySelector("button").addEventListener("click", async function () {
-            if (!currentUserId) return showCustomAlert("未登入狀態不可刪除。");
-            if (await showCustomConfirm("您確定要刪除這筆「" + (row.data.type || "") + "」紀錄嗎？")) {
+          li.innerHTML = `
+            <span><strong>${row.type}</strong> - ${row.familyName || "（未填姓名）"} - ${row.date}</span>
+            <button class="text-red-500 hover:text-red-700 text-sm" data-id="${row.id}">刪除</button>
+          `;
+          li.querySelector("button").addEventListener("click", async () => {
+            if (await showCustomConfirm(\`您確定要刪除這筆「\${row.type}」紀錄嗎？\`)) {
               try {
                 await deleteDoc(doc(db, getAttendanceCollectionPath(deceasedId), row.id));
               } catch (e) {
@@ -630,27 +604,27 @@
           });
           attendanceList.appendChild(li);
         });
-      }, function (e) {
+      }, (e) => {
         console.error("[attendance/list] 失敗：", e);
         attendanceList.innerHTML = '<p class="text-red-500">登記列表加載失敗。</p>';
       });
     }
 
-    /*****************************************************************
-     *  9) 匯出
-     *****************************************************************/
+    /**************************************************************
+     * 10) 匯出
+     **************************************************************/
     async function exportAllData() {
       if (!currentUserId) throw new Error("未登入");
-      const exportData = { appId: appId, exportDate: new Date().toISOString(), deceased: [] };
+      const exportData = { appId, exportDate: new Date().toISOString(), deceased: [] };
       const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
       for (const d of snap.docs) {
         const base = { id: d.id, data: d.data(), attendance: [] };
         const attSnap = await getDocs(collection(db, getAttendanceCollectionPath(d.id)));
-        attSnap.forEach(function (a) { base.attendance.push({ id: a.id, data: a.data() }); });
+        attSnap.forEach(a => base.attendance.push({ id: a.id, data: a.data() }));
         exportData.deceased.push(base);
       }
       const dateStr = new Date().toISOString().split("T")[0];
-      const fileName = "doingSeven-backup-" + dateStr + ".json";
+      const fileName = `doingSeven-backup-${dateStr}.json`;
       const dataStr = JSON.stringify(exportData, null, 2);
       const blob = new Blob([dataStr], { type: "application/json;charset=utf-8" });
       const a = document.createElement("a");
@@ -662,34 +636,9 @@
       URL.revokeObjectURL(a.href);
     }
 
-    /*****************************************************************
-     * 10) 連線測試：讀取一次；若未登入且在本機，直接渲染只讀列表
-     *****************************************************************/
-    let testedOnce = false;
-    async function testConnectionOnce() {
-      try {
-        const snap = await getDocs(collection(db, getDeceasedCollectionPath()));
-        setStatus(snap ? "✅ 測試：成功讀取 Firestore" : "⚠️ 測試：讀取結果為空", "ok");
-        testedOnce = true;
-        if (!currentUserId && allowReadonlyOnLocalhost) {
-          // 在本機且尚未登入（或登入失敗），直接以只讀方式渲染一次，方便檢查資料
-          const rows = snap.docs.map(function (d) { return { id: d.id, data: d.data() }; });
-          rows.sort(function (a, b) {
-            const da = a.data.deceasedDate ? new Date(a.data.deceasedDate) : new Date(0);
-            const dbb = b.data.deceasedDate ? new Date(b.data.deceasedDate) : new Date(0);
-            return dbb - da;
-          });
-          renderDeceasedCards(rows, false);
-          readonlyBadge && readonlyBadge.classList.remove("hidden-page");
-        }
-      } catch (e) {
-        setStatus("❌ 測試讀取失敗：" + (e && e.message ? e.message : e), "err");
-      }
-    }
-
-    /*****************************************************************
+    /**************************************************************
      * 11) 自訂 Alert / Confirm
-     *****************************************************************/
+     **************************************************************/
     function showCustomAlert(message) {
       const box = document.getElementById("custom-alert");
       const msg = document.getElementById("custom-alert-message");
@@ -698,7 +647,7 @@
       box.classList.remove("hidden-page");
       const newOk = ok.cloneNode(true);
       ok.parentNode.replaceChild(newOk, ok);
-      newOk.addEventListener("click", function () { box.classList.add("hidden-page"); });
+      newOk.addEventListener("click", () => box.classList.add("hidden-page"));
     }
     function showCustomConfirm(message) {
       const box = document.getElementById("custom-confirm");
@@ -707,26 +656,27 @@
       const no = document.getElementById("custom-confirm-no");
       msg.textContent = message;
       box.classList.remove("hidden-page");
-      return new Promise(function (resolve) {
+      return new Promise((resolve) => {
         const newYes = yes.cloneNode(true);
         yes.parentNode.replaceChild(newYes, yes);
         const newNo = no.cloneNode(true);
         no.parentNode.replaceChild(newNo, no);
-        newYes.addEventListener("click", function () { box.classList.add("hidden-page"); resolve(true); });
-        newNo.addEventListener("click", function () { box.classList.add("hidden-page"); resolve(false); });
+        newYes.addEventListener("click", () => { box.classList.add("hidden-page"); resolve(true); });
+        newNo.addEventListener("click", () => { box.classList.add("hidden-page"); resolve(false); });
       });
     }
-  </script>
 
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            'sans': ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', '"Noto Sans"', 'sans-serif', '"Apple Color Emoji"', '"Segoe UI Emoji"', '"Segoe UI Symbol"', '"Noto Color Emoji"']
-          }
-        }
-      }
+    /**************************************************************
+     * 12) 今日日期（YYYY/MM/DD 週X）
+     **************************************************************/
+    function updateTodayInfo() {
+      if (!todayInfo) return;
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2,'0');
+      const day = String(d.getDate()).padStart(2,'0');
+      const wk = "日一二三四五六"[d.getDay()];
+      todayInfo.textContent = `${y}/${m}/${day}（週${wk}）`;
     }
   </script>
 </head>
@@ -734,23 +684,32 @@
 <body class="bg-gray-100 font-sans">
   <div class="container mx-auto max-w-4xl min-h-screen bg-gray-100">
 
-    <!-- 工具列：包含「只讀徽章」與「測試連線」 -->
-    <div class="p-3 flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <h1 class="text-xl font-semibold text-teal-700">做七登記（穩定連線）</h1>
-        <span id="readonly-badge" class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hidden-page">只讀模式</span>
-      </div>
-      <button id="test-conn-btn" class="text-sm px-3 py-2 rounded bg-sky-500 text-white hover:bg-sky-600">
-        測試連線
-      </button>
-    </div>
-
     <!-- =======================
          頁面 1: 往生菩薩列表
     ========================= -->
     <main id="page-list" class="p-4">
-      <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10">
-        <h2 class="text-2xl font-semibold text-center">往生菩薩</h2>
+      <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-3 sticky top-0 z-10">
+        <div class="flex items-center justify-between">
+          <!-- 左：匯出 -->
+          <button id="export-button" class="p-2 rounded bg-white/10 hover:bg-white/20" title="下載 JSON 備份">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
+              <path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v11.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06l3.22 3.22V3a.75.75 0 0 1 .75-.75Zm-9 13.5a.75.75 0 0 1 .75.75v2.25a1.5 1.5 0 0 0 1.5 1.5h13.5a1.5 1.5 0 0 0 1.5-1.5V16.5a.75.75 0 0 1 1.5 0v2.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V16.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
+            </svg>
+          </button>
+
+          <!-- 中：標題 + 日期 -->
+          <div class="text-center">
+            <h2 class="text-2xl font-semibold">往生菩薩</h2>
+            <div id="today-info" class="text-[11px] opacity-90 mt-0.5"></div>
+          </div>
+
+          <!-- 右：新增 -->
+          <button id="add-deceased-fab" class="p-2 rounded bg-white/10 hover:bg-white/20" title="新增檔案">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-7 h-7">
+              <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 9a.75.75 0 0 0-1.5 0v2.25H9a.75.75 0 0 0 0 1.5h2.25V15a.75.75 0 0 0 1.5 0v-2.25H15a.75.75 0 0 0 0-1.5h-2.25V9Z" clip-rule="evenodd" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       <div id="loading-indicator" class="text-center p-8 hidden-page">
@@ -758,7 +717,7 @@
       </div>
 
       <div id="deceased-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
-        <!-- JS 動態插入 -->
+        <!-- Cards 由 JS 動態插入 -->
       </div>
     </main>
 
@@ -868,7 +827,7 @@
     </main>
 
     <!-- =======================
-         頁面 3: 詳細管理頁（簡化：資訊卡 + 登記表 + 列表）
+         頁面 3: 詳細管理頁（資訊卡 + 登記表 + 列表）
     ========================= -->
     <main id="page-details" class="p-4 hidden-page">
       <header class="bg-teal-700 text-white shadow-md rounded-t-lg p-4 sticky top-0 z-10 flex items-center justify-between">
@@ -880,6 +839,7 @@
       <div class="bg-white p-4 rounded-b-lg shadow-md mb-4 space-y-2">
         <h3 id="details-deceased-name" class="text-2xl font-bold text-teal-800"></h3>
         <p id="details-deceased-date" class="text-gray-600"></p>
+
         <div class="pt-2 border-t">
           <p id="details-applicant" class="text-sm text-gray-600"></p>
           <p id="details-contact" class="text-sm text-gray-600"></p>
@@ -887,11 +847,13 @@
           <p id="details-chant-date-time" class="text-sm text-gray-600"></p>
           <p id="details-chant-location" class="text-sm text-gray-600"></p>
         </div>
+
         <div class="pt-2 border-t">
           <p id="details-deceased-referrer" class="text-sm text-gray-500"></p>
           <p id="details-deceased-source" class="text-sm text-gray-500"></p>
           <p id="details-deceased-source-notes" class="text-sm text-gray-500 pl-4"></p>
         </div>
+
         <div class="pt-2 border-t">
           <p id="details-notify" class="text-sm text-gray-600 font-medium"></p>
           <p id="details-attended" class="text-sm text-gray-600 font-medium"></p>
@@ -1037,29 +999,15 @@
     </main>
   </div>
 
-  <!-- 浮動新增按鈕 -->
-  <button id="add-deceased-fab" class="fixed bottom-6 right-6 bg-teal-600 text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-3xl hover:bg-teal-700 transition-transform hover:scale-110" aria-label="新增">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-8 h-8">
-      <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25ZM12.75 9a.75.75 0 0 0-1.5 0v2.25H9a.75.75 0 0 0 0 1.5h2.25V15a.75.75 0 0 0 1.5 0v-2.25H15a.75.75 0 0 0 0-1.5h-2.25V9Z" clip-rule="evenodd" />
-    </svg>
-  </button>
-
-  <!-- 匯出按鈕 -->
-  <button id="export-button" class="fixed bottom-6 left-6 bg-gray-600 text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-3xl hover:bg-gray-700 transition-transform hover:scale-110" aria-label="匯出">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-7 h-7">
-      <path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v11.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 1 1 1.06-1.06l3.22 3.22V3a.75.75 0 0 1 .75-.75Zm-9 13.5a.75.75 0 0 1 .75.75v2.25a1.5 1.5 0 0 0 1.5 1.5h13.5a1.5 1.5 0 0 0 1.5-1.5V16.5a.75.75 0 0 1 1.5 0v2.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V16.5a.75.75 0 0 1 .75-.75Z" clip-rule="evenodd" />
-    </svg>
-  </button>
-
   <!-- 匯出讀取中 -->
-  <div id="export-loading-text" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page" role="dialog" aria-modal="true" aria-live="polite">
+  <div id="export-loading-text" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page">
     <div class="bg-white p-6 rounded-lg shadow-xl text-center">
       <p class="text-lg font-medium text-gray-700">正在打包資料，請稍候...</p>
     </div>
   </div>
 
   <!-- 自訂 Alert -->
-  <div id="custom-alert" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page" role="dialog" aria-modal="true">
+  <div id="custom-alert" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page">
     <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
       <h3 class="text-lg font-medium text-gray-900 mb-4">通知</h3>
       <p id="custom-alert-message" class="text-sm text-gray-600 mb-6"></p>
@@ -1070,7 +1018,7 @@
   </div>
 
   <!-- 自訂 Confirm -->
-  <div id="custom-confirm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page" role="dialog" aria-modal="true">
+  <div id="custom-confirm" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 hidden-page">
     <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full">
       <h3 class="text-lg font-medium text-gray-900 mb-4">請確認</h3>
       <p id="custom-confirm-message" class="text-sm text-gray-600 mb-6"></p>
