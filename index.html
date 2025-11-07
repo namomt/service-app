@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>做七登記（連線穩定版）</title>
+  <title>做七登記</title>
 
   <!-- Tailwind CSS（CDN；正式可改為本地建置） -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -307,7 +307,7 @@
     /*****************************************************************
      * 7) 主列表（以「往生日期」由新到舊排序）
      *****************************************************************/
-    let firstListSnap = true;
+    // let firstListSnap = true; // [REMOVED]
     async function loadDeceasedList() {
       if (!currentUserId) return;
       loadingIndicator.classList.remove("hidden-page");
@@ -317,10 +317,11 @@
       const qy = query(collection(db, getDeceasedCollectionPath()));
       deceasedUnsubscribe = onSnapshot(qy, function (snap) {
         loadingIndicator.classList.add("hidden-page");
-        if (firstListSnap) {
-          setStatus("✅ 已連線到 Firestore（收到列表更新）", "ok");
-          firstListSnap = false;
-        }
+        // [REMOVED]
+        // if (firstListSnap) {
+        //   setStatus("✅ 已連線到 Firestore（收到列表更新）", "ok");
+        //   firstListSnap = false;
+        // }
         if (snap.empty) {
           deceasedList.innerHTML = '<p class="text-gray-500 text-center col-span-1 md:col-span-2 lg:col-span-3">目前沒有任何資料。請點擊右下角按鈕新增。</p>';
           return;
@@ -719,7 +720,7 @@
     <!-- 工具列：包含「只讀徽章」（移除了「測試連線」） -->
     <div class="p-3 flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <h1 class="text-xl font-semibold text-teal-700">做七登記（穩定連線）</h1>
+        <h1 class="text-xl font-semibold text-teal-700">做七登記</h1>
         <span id="readonly-badge" class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hidden-page">只讀模式</span>
       </div>
       <!-- (移除了 test-conn-btn 按鈕) -->
